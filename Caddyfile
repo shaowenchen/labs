@@ -1,0 +1,10 @@
+# The stable public entry point.
+#
+# Caddy obtains the certificate automatically and sets X-Forwarded-For, which is
+# what makes LABS_TRUSTED_PROXY=true correct — and it is only correct because the
+# labs service's own port is not published to the host (see the compose file).
+# Publish it and the header becomes forgeable, and every rate limit with it.
+labs.example.com {
+	encode zstd gzip
+	reverse_proxy labs:8080
+}

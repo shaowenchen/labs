@@ -1,0 +1,45 @@
+# labs on a single host, behind a TLS-terminating proxy.
+#
+#   cp .env.example .env    # then fill it in
+#   docker compose up -d --build
+#
+# Caddy is the only service that publishes a port; labs is reachable only on the
+# compose network. That is what lets LABS_TRUSTED_PROXY be true: the only way to
+# reach labs is through Caddy, so the X-Forwarded-For it sets can be believed.
+# If you ever add `ports:` to the labs service, set LABS_TRUSTED_PROXY=false at
+# the same time, or an anonymous caller can spoof their address with a header and
+# bypass every rate limit.
+
+services:
+  labs:
+    build: .
+    image: ${LABS_IMAGE:-docker.io/shaowenchen/labs:dev}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LABS_LISTEN: ":8080"
+      LABS_STATE_FILE: /data/labs.json
+      LABS_TRUSTED_PROXY: "true"
+    volumes:
+      - labs-state:/data
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - labs
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  labs-state:
+  caddy-data:
+  caddy-config:

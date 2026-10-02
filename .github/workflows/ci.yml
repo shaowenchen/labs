@@ -1,0 +1,30 @@
+# The gate every push runs. It is deliberately the same commands `make check`
+# runs, so a green local tree and a green build mean the same thing.
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: fmt
+        run: make fmt-check
+      - name: vet
+        run: make vet
+      - name: test
+        run: make test
+      - name: test with the race detector
+        run: make test-race
+      - name: build
+        run: make build
