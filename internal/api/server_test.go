@@ -150,7 +150,9 @@ func TestCreateLabWithoutAReadyEnvIsRetryable(t *testing.T) {
 	svc := &fakeSvc{provision: func(model.Kind, string) (session.Result, error) {
 		return session.Result{}, session.ErrNoReadyEnv
 	}}
-	s := newTestServer(t, svc, testConfig(), 5)
+	cfg := testConfig()
+	cfg.KeepWarm = true // so the message says one is being started
+	s := newTestServer(t, svc, cfg, 5)
 
 	w := do(t, s, "POST", "/api/v1/labs", "{}")
 	if w.Code != http.StatusServiceUnavailable {
@@ -163,6 +165,27 @@ func TestCreateLabWithoutAReadyEnvIsRetryable(t *testing.T) {
 	_ = json.Unmarshal(w.Body.Bytes(), &body)
 	if !body.Retryable {
 		t.Error("a starting environment should be marked retryable")
+	}
+}
+
+// With the keeper off, nothing is starting an environment, and the message must
+// not claim one is — that would send the reader off to wait for nothing.
+func TestCreateLabWithoutAReadyEnvSaysWhenNothingIsStartingOne(t *testing.T) {
+	svc := &fakeSvc{provision: func(model.Kind, string) (session.Result, error) {
+		return session.Result{}, session.ErrNoReadyEnv
+	}}
+	cfg := testConfig()
+	cfg.KeepWarm = false
+	s := newTestServer(t, svc, cfg, 5)
+
+	w := do(t, s, "POST", "/api/v1/labs", "{}")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	var body errorBody
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if strings.Contains(body.Error, "being started") {
+		t.Fatalf("message claims an environment is starting while the keeper is off: %q", body.Error)
 	}
 }
 

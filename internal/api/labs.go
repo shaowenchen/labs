@@ -68,7 +68,7 @@ func (s *Server) createLab(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.svc.Provision(r.Context(), kind, s.clientIP(r))
 	if err != nil {
-		fail(w, r, provisionError(err))
+		fail(w, r, s.provisionError(err))
 		return
 	}
 
@@ -147,13 +147,21 @@ func (s *Server) resolveKind(requested string) (model.Kind, error) {
 // address that already holds its share is "not you right now" (429), no
 // environment being up is "we are starting" (503), and an unknown kind is the
 // caller's to fix (400). All of these are retryable except the last.
-func provisionError(err error) *apiError {
+func (s *Server) provisionError(err error) *apiError {
 	switch {
 	case errors.Is(err, session.ErrUnknownKind):
 		return BadRequest("%s", err.Error())
 	case errors.Is(err, session.ErrNoReadyEnv):
-		return Errorf(http.StatusServiceUnavailable, "no lab environment is available right now; one is being started").
-			Retryable().WithRetryAfter(60)
+		// Say which of the two situations this is. "One is being started" is only
+		// true when something is actually starting one — the keeper. With it off,
+		// or on a host with no long-lived process to run it, nothing is, and
+		// claiming otherwise sends the reader off to wait for something that is
+		// never coming.
+		msg := "no lab environment is available right now, and nothing is starting one; start the debugger workflow in the repository to bring one up"
+		if s.cfg.KeepWarm {
+			msg = "no lab environment is available right now; one is being started"
+		}
+		return Errorf(http.StatusServiceUnavailable, "%s", msg).Retryable().WithRetryAfter(60)
 	case errors.Is(err, store.ErrAtCapacity):
 		return Errorf(http.StatusServiceUnavailable, "all labs are in use right now; try again shortly").
 			Retryable().WithRetryAfter(30)
