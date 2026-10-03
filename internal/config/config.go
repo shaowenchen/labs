@@ -28,11 +28,6 @@ type Config struct {
 	// Listen is the address the HTTP server binds, in Go's ":port" form.
 	Listen string
 
-	// StateFile is the JSON file sessions are recorded in. It must be on a
-	// volume that survives a restart, or a restart forgets the sessions it
-	// handed out and cannot expire them.
-	StateFile string
-
 	// SessionTTL is how long a delivered lab lasts, which is the product's
 	// promised validity.
 	SessionTTL time.Duration
@@ -106,7 +101,6 @@ func Load() (Config, error) {
 	var err error
 
 	setString(&cfg.Listen, "LABS_LISTEN", ":8080")
-	setString(&cfg.StateFile, "LABS_STATE_FILE", "/data/labs.json")
 	setString(&cfg.LogLevel, "LABS_LOG_LEVEL", "info")
 	setString(&cfg.GitHubToken, "LABS_GITHUB_TOKEN", "")
 	setString(&cfg.GitHubAPI, "LABS_GITHUB_API", "https://api.github.com")
@@ -165,8 +159,6 @@ func (c Config) Validate() error {
 	switch {
 	case c.Listen == "":
 		return fmt.Errorf("LABS_LISTEN is empty")
-	case c.StateFile == "":
-		return fmt.Errorf("LABS_STATE_FILE is empty")
 	case c.SessionTTL <= 0:
 		return fmt.Errorf("LABS_SESSION_TTL must be positive, got %s", c.SessionTTL)
 	case c.GitHubToken == "":

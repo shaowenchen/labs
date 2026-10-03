@@ -198,6 +198,12 @@ Two things are worth knowing at the top:
 
 ## Running it
 
+It is a **long-lived process**, not a serverless function. Two loops run for the
+life of the process — the keeper that dispatches successor runs, and the reaper
+that expires sessions every thirty seconds — and there is no timer in a
+request-scoped runtime for either to run in. Put it on a host, a VM or a
+Kubernetes cluster, not on a platform that starts it per request.
+
 ```bash
 cp .env.example .env      # fill it in
 docker compose up -d --build
@@ -206,13 +212,22 @@ docker compose up -d --build
 Caddy terminates TLS for the domain in the `Caddyfile` and is the only service
 that publishes a port; labs is reachable only on the compose network, which is
 what makes `LABS_TRUSTED_PROXY=true` in the compose file correct. Point the
-domain's DNS at the host first.
+domain's DNS at the host first. Nothing else is needed: there is no database and
+no volume.
+
+Session state is in memory, and deliberately so — a lab is disposable and lasts
+two hours, so the service keeps only what it needs to expire and free what it
+handed out. Two consequences are worth knowing. A restart forgets the live
+sessions, which is the safe direction: reconciliation then rotates every
+outstanding credential away, so a restart can cut a lab short but cannot leave
+one working. And the state is per-process, so the service runs **one replica**;
+two would each hold half the sessions and hand the same slot out twice.
 
 Without docker:
 
 ```bash
 make build
-LABS_STATE_FILE=./state.json ./bin/labs
+./bin/labs
 ```
 
 It starts even with no reachable environment: `/healthz` answers, and `/readyz`
@@ -234,7 +249,8 @@ API. What they pin down is the behaviour that is expensive to get wrong:
 - the keeper never dispatches over a queued run (the bug that would wedge an
   environment permanently);
 - a failed provision gives its slot back;
-- the state file carries no credential;
+- a restart forgets every live session, so reconciliation rotates them all away
+  rather than leaving a credential working;
 - `GET` never returns a key, and `DELETE` is idempotent.
 
 `hack/smoke.sh` is the real end-to-end path, for when you have a token and a

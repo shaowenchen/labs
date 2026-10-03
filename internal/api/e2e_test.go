@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -111,10 +110,7 @@ func newE2E(t *testing.T) (*Server, *fakeAppLab) {
 		RateLimitWindow:  time.Hour,
 		Envs:             []model.Env{env},
 	}
-	st, err := store.Open(filepath.Join(t.TempDir(), "labs.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := store.New()
 	drivers := map[model.Kind]driver.Driver{model.KindApplab: applab.New(discard)}
 	manager := session.New(cfg, st, drivers, discard)
 
@@ -206,10 +202,7 @@ func TestEndToEndHandlesADownEnvironment(t *testing.T) {
 			Domain: "127.0.0.1:1", BasePath: "/applab", Slots: []string{"lab-01"}, Capacity: 1, APIKey: "k",
 		}},
 	}
-	st, err := store.Open(filepath.Join(t.TempDir(), "labs.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := store.New()
 	manager := session.New(cfg, st, map[model.Kind]driver.Driver{model.KindApplab: applab.New(discard)}, discard)
 	s := New(Deps{Config: cfg, Service: manager, Limiter: ratelimit.New(100, time.Hour), Log: discard})
 

@@ -24,15 +24,12 @@ set -euo pipefail
 
 PORT="${LABS_SMOKE_PORT:-18080}"
 BASE="http://127.0.0.1:${PORT}"
-STATE="$(pwd)/bin/smoke-state.json"
-mkdir -p "$(pwd)/bin"
 
 echo "==> building"
 make build >/dev/null
 
 echo "==> starting labs on ${BASE}"
 LABS_LISTEN=":${PORT}" \
-LABS_STATE_FILE="${STATE}" \
 LABS_LOG_LEVEL=debug \
   ./bin/labs &
 PID=$!

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -63,10 +62,7 @@ func (f *fakeDriver) Reconcile(context.Context, model.Env, []model.Session) erro
 
 func testManager(t *testing.T, drv driver.Driver, cfg config.Config) (*Manager, *store.Store) {
 	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "labs.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := store.New()
 	m := New(cfg, st, map[model.Kind]driver.Driver{model.KindApplab: drv},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	// A frozen clock so expiry is deterministic.
@@ -185,10 +181,7 @@ func TestPerIPLimitIsEnforced(t *testing.T) {
 func TestExpireReleasesAndCallsTheDriver(t *testing.T) {
 	base := time.Now()
 	drv := &fakeDriver{ready: true}
-	st, err := store.Open(filepath.Join(t.TempDir(), "labs.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	st := store.New()
 	m := New(testConfig(), st, map[model.Kind]driver.Driver{model.KindApplab: drv},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.WithClock(func() time.Time { return base })

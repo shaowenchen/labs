@@ -46,8 +46,8 @@ RUN go build -trimpath \
 # keep patched.
 #
 # static-debian12:nonroot defines uid 65532, so the pod runs unprivileged
-# without the deployment having to arrange it. The state directory must be
-# writable by that uid.
+# without the deployment having to arrange it. Nothing needs writing to disk: the
+# session state is in memory, deliberately, so the image runs read-only.
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /out/labs /usr/local/bin/labs
@@ -55,8 +55,7 @@ COPY --from=builder /out/labs /usr/local/bin/labs
 # A bare `docker run` of the image starts somewhere sensible rather than failing
 # on an empty configuration. The compose file and a real deployment set the rest.
 ENV LABS_LISTEN=:8080 \
-    LABS_LOG_LEVEL=info \
-    LABS_STATE_FILE=/data/labs.json
+    LABS_LOG_LEVEL=info
 
 USER nonroot:nonroot
 

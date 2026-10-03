@@ -78,8 +78,8 @@ type Env struct {
 	Inputs map[string]string `json:"inputs,omitempty"`
 
 	// APIKey is the environment's own key, which labs holds in order to mint
-	// per-session credentials. It is never serialised — a state file, a log line
-	// or a /config response must not carry it — and it comes from a dedicated
+	// per-session credentials. It is never serialised — a log line or a
+	// /config response must not carry it — and it comes from a dedicated
 	// LABS_KEY_<ID> variable rather than from the environment JSON.
 	APIKey string `json:"-"`
 }
@@ -120,8 +120,9 @@ func (e Env) BaseURL() string {
 //
 // The API key a caller receives is deliberately not a field. labs uses it once,
 // at the moment it is minted, and never again — expiry is enforced by rotating
-// the credential, not by re-reading it — so keeping it would be storing a
-// secret for no purpose and making a leaked state file a leaked credential.
+// the credential, not by re-reading it — so keeping it would be holding a
+// secret for no purpose, and a compromise of the process's memory would be a
+// compromise of every live credential.
 type Session struct {
 	// ID is the session's handle. It is minted from crypto/rand and is the
 	// bearer of GET/DELETE /api/v1/labs/{id}, so it must be unguessable.

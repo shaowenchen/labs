@@ -1,23 +1,11 @@
 package store
 
 import (
-	"encoding/json"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/shaowenchen/labs/internal/model"
 )
-
-func tempStore(t *testing.T) *Store {
-	t.Helper()
-	s, err := Open(filepath.Join(t.TempDir(), "labs.json"))
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	return s
-}
 
 func applabEnv() model.Env {
 	return model.Env{
@@ -34,7 +22,7 @@ func aSession(id, ip string) model.Session {
 }
 
 func TestReserveClaimsDistinctSlots(t *testing.T) {
-	s := tempStore(t)
+	s := New()
 	env := applabEnv()
 
 	a, err := s.Reserve(env, aSession("s1", "1.1.1.1"), Limits{})
@@ -54,7 +42,7 @@ func TestReserveClaimsDistinctSlots(t *testing.T) {
 }
 
 func TestReserveRefusesWhenSlotsAreFull(t *testing.T) {
-	s := tempStore(t)
+	s := New()
 	env := applabEnv()
 	mustReserve(t, s, env, "s1", "1.1.1.1")
 	mustReserve(t, s, env, "s2", "2.2.2.2")
@@ -65,7 +53,7 @@ func TestReserveRefusesWhenSlotsAreFull(t *testing.T) {
 }
 
 func TestReserveEnforcesPerIPLimit(t *testing.T) {
-	s := tempStore(t)
+	s := New()
 	env := applabEnv()
 	mustReserve(t, s, env, "s1", "9.9.9.9")
 
@@ -75,8 +63,19 @@ func TestReserveEnforcesPerIPLimit(t *testing.T) {
 	}
 }
 
+func TestReserveEnforcesTheGlobalLimit(t *testing.T) {
+	s := New()
+	env := applabEnv()
+	mustReserve(t, s, env, "s1", "1.1.1.1")
+
+	_, err := s.Reserve(applabEnv(), aSession("s2", "2.2.2.2"), Limits{MaxTotal: 1})
+	if err != ErrAtCapacity {
+		t.Fatalf("over the global cap = %v, want ErrAtCapacity", err)
+	}
+}
+
 func TestDropFreesTheSlot(t *testing.T) {
-	s := tempStore(t)
+	s := New()
 	env := applabEnv()
 	app := mustReserve(t, s, env, "s1", "1.1.1.1")
 
@@ -94,7 +93,7 @@ func TestDropFreesTheSlot(t *testing.T) {
 }
 
 func TestDropIsIdempotent(t *testing.T) {
-	s := tempStore(t)
+	s := New()
 	mustReserve(t, s, applabEnv(), "s1", "1.1.1.1")
 	if err := s.Drop("s1"); err != nil {
 		t.Fatalf("first Drop: %v", err)
@@ -105,7 +104,7 @@ func TestDropIsIdempotent(t *testing.T) {
 }
 
 func TestExpiredFindsOnlyPastSessions(t *testing.T) {
-	s := tempStore(t)
+	s := New()
 	env := applabEnv()
 	now := time.Now()
 	past := model.Session{ID: "old", EnvID: "applab-1", Kind: model.KindApplab, CreatedAt: now.Add(-3 * time.Hour), ExpiresAt: now.Add(-time.Hour)}
@@ -123,62 +122,45 @@ func TestExpiredFindsOnlyPastSessions(t *testing.T) {
 	}
 }
 
-// The state must survive a restart: this is the whole reason it is on disk.
-func TestStateSurvivesReopen(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "labs.json")
-	s, err := Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustReserve(t, s, applabEnv(), "s1", "1.1.1.1")
-
-	reopened, err := Open(path)
-	if err != nil {
-		t.Fatalf("reopen: %v", err)
-	}
-	if _, ok := reopened.Get("s1"); !ok {
-		t.Fatal("the session did not survive a reopen")
-	}
-	if got := reopened.OccupiedSlots("applab-1"); got["lab-01"] != "s1" {
-		t.Fatalf("slot occupancy did not survive a reopen: %v", got)
-	}
-}
-
-// A file that cannot be parsed must fail loudly rather than starting empty: an
-// empty start would forget live sessions and leave their credentials unexpired.
-func TestAParseErrorIsNotASilentReset(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "labs.json")
-	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Open(path); err == nil {
-		t.Fatal("Open accepted a corrupt state file")
-	}
-}
-
-// The key must never be serialised: a leaked state file must not be a leaked
-// credential. Session has no key field, and this guards against one being added.
-func TestStateCarriesNoCredential(t *testing.T) {
-	s := tempStore(t)
+func TestCompleteRecordsTheAddress(t *testing.T) {
+	s := New()
 	app := mustReserve(t, s, applabEnv(), "s1", "1.1.1.1")
 	if err := s.Complete("s1", "https://a.example.com/applab", app, ""); err != nil {
-		t.Fatal(err)
+		t.Fatalf("Complete: %v", err)
 	}
-	raw, err := os.ReadFile(s.Path())
-	if err != nil {
-		t.Fatal(err)
+	got, ok := s.Get("s1")
+	if !ok {
+		t.Fatal("session is gone after Complete")
 	}
-	var decoded map[string]any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		t.Fatal(err)
+	if got.ConsoleURL != "https://a.example.com/applab" {
+		t.Errorf("ConsoleURL = %q", got.ConsoleURL)
 	}
-	blob := string(raw)
-	for _, banned := range []string{"api_key", "user-key", "admin-key"} {
-		if contains(blob, banned) {
-			t.Errorf("state file contains %q, which it must not", banned)
+	if got.App != app {
+		t.Errorf("App = %q, want %q", got.App, app)
+	}
+}
+
+func TestCompleteOnAnUnknownSessionIsNotFound(t *testing.T) {
+	if err := New().Complete("nope", "u", "", ""); err != ErrNotFound {
+		t.Fatalf("Complete on an unknown session = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSessionsAreNewestFirst(t *testing.T) {
+	s := New()
+	now := time.Now()
+	env := applabEnv()
+	env.Slots = []string{"lab-01", "lab-02", "lab-03"}
+	env.Capacity = 3
+	for i, at := range []time.Time{now.Add(-2 * time.Minute), now, now.Add(-time.Minute)} {
+		sess := model.Session{ID: string(rune('a' + i)), EnvID: "applab-1", Kind: model.KindApplab, CreatedAt: at, ExpiresAt: at.Add(time.Hour)}
+		if _, err := s.Reserve(env, sess, Limits{}); err != nil {
+			t.Fatal(err)
 		}
+	}
+	got := s.Sessions()
+	if len(got) != 3 || !got[0].CreatedAt.Equal(now) {
+		t.Fatalf("Sessions not newest first: %+v", got)
 	}
 }
 
@@ -189,13 +171,4 @@ func mustReserve(t *testing.T, s *Store, env model.Env, id, ip string) string {
 		t.Fatalf("Reserve %s: %v", id, err)
 	}
 	return app
-}
-
-func contains(haystack, needle string) bool {
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
 }

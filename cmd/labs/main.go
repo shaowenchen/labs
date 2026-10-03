@@ -75,10 +75,7 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 		printResolved(cfg, log)
 	}
 
-	st, err := store.Open(cfg.StateFile)
-	if err != nil {
-		return err
-	}
+	st := store.New()
 
 	// One driver per kind the deployment actually runs. Built here rather than
 	// inside the manager so a kind with no driver is a startup error rather than
@@ -221,7 +218,6 @@ func printResolved(cfg config.Config, log *slog.Logger) {
 	}
 	log.Info("resolved configuration",
 		"listen", cfg.Listen,
-		"state_file", cfg.StateFile,
 		"session_ttl", cfg.SessionTTL.String(),
 		"keep_warm", cfg.KeepWarm,
 		"trusted_proxy", cfg.TrustedProxy,

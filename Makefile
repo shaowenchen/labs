@@ -27,12 +27,12 @@ build:
 	@mkdir -p $(BIN)
 	CGO_ENABLED=0 $(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN)/labs ./cmd/labs
 
-# A local run: the state file goes to a scratch path so it does not need /data,
-# and the token is taken from the environment. It starts even with no reachable
+# A local run: the token comes from the environment and the session state is in
+# memory, so nothing is written to disk. It starts even with no reachable
 # environment — /healthz answers and /readyz says what is not ready.
 .PHONY: run
 run: build
-	LABS_STATE_FILE=./bin/labs-state.json $(BIN)/labs
+	$(BIN)/labs
 
 .PHONY: test
 test:

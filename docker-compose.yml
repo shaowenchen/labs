@@ -19,10 +19,7 @@ services:
       - .env
     environment:
       LABS_LISTEN: ":8080"
-      LABS_STATE_FILE: /data/labs.json
       LABS_TRUSTED_PROXY: "true"
-    volumes:
-      - labs-state:/data
     expose:
       - "8080"
 
@@ -40,6 +37,5 @@ services:
       - caddy-config:/config
 
 volumes:
-  labs-state:
   caddy-data:
   caddy-config:

@@ -1,24 +1,30 @@
 // Package store records the sessions this service has handed out.
 //
-// It is one JSON file, rewritten whole on every change, guarded by a mutex. That
-// is enough for a single process and it is deliberately not more: the service
-// runs one replica, because the file and the rate limiter are both per-process.
-// A second replica would need a shared store and a distributed limiter, and
-// pretending this file is safe to share would be the worse answer.
+// It keeps them in memory, guarded by a mutex. There is deliberately no file:
+// the service is a single long-lived process, and a lab is a disposable thing
+// that lasts two hours, so the state it needs to hold is small and short-lived
+// enough that a volume to persist it would cost more to operate than it saves.
 //
-// The file is not a place for secrets. A session's API key is used once, when it
+// Two consequences follow, and both are acceptable for a lab service rather
+// than accidents:
+//
+//   - A restart forgets the live sessions. On the next reconciliation every
+//     slot looks unheld, so every outstanding credential is rotated away — a
+//     restart ends the labs that were in flight, and leaves none alive and
+//     unaccounted for. That is the safer of the two failure directions: it can
+//     cut a session short, but it cannot leave a credential working.
+//   - The state is per-process, so the service runs one replica. Two would
+//     each hold their own half of the sessions and hand the same slot out
+//     twice. Persisting to a shared store is what would change that, and this
+//     is where it would go.
+//
+// The store never holds a credential: a session's API key is used once, when it
 // is minted, and expiry is enforced by rotating the credential rather than by
-// re-reading it — so the key is never written here, and a leaked state file is
-// not a leaked credential.
+// re-reading it, so the key has no reason to be kept.
 package store
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
@@ -52,60 +58,21 @@ type Limits struct {
 	MaxPerIP int
 }
 
-// Store is the session record.
+// Store is the session record, held in memory.
 type Store struct {
-	mu   sync.Mutex
-	path string
-	st   state
+	mu       sync.Mutex
+	sessions []model.Session
+
+	// slots maps an environment id to its app ids and the session occupying
+	// each, so slot occupancy and the session list cannot disagree: they are
+	// updated under one lock.
+	slots map[string]map[string]string
 }
 
-type state struct {
-	Version  int             `json:"version"`
-	Sessions []model.Session `json:"sessions"`
-
-	// Slots maps an environment id to its app ids and the session occupying
-	// each, so slot occupancy and the session list cannot disagree: they are in
-	// one file, written in one transaction.
-	Slots map[string]map[string]string `json:"slots"`
+// New returns an empty store.
+func New() *Store {
+	return &Store{slots: map[string]map[string]string{}}
 }
-
-const stateVersion = 1
-
-// Open loads the store from path, creating an empty one if the file is absent.
-//
-// A file that exists but cannot be parsed is an error rather than a fresh
-// start: silently forgetting every live session would leave the credentials it
-// handed out unexpired and unaccounted for, which is the one failure this file
-// exists to prevent.
-func Open(path string) (*Store, error) {
-	if path == "" {
-		return nil, fmt.Errorf("store: no path given")
-	}
-	s := &Store{
-		path: path,
-		st:   state{Version: stateVersion, Slots: map[string]map[string]string{}},
-	}
-
-	raw, err := os.ReadFile(path)
-	switch {
-	case err == nil:
-		if err := json.Unmarshal(raw, &s.st); err != nil {
-			return nil, fmt.Errorf("store: parse %s: %w", path, err)
-		}
-		if s.st.Slots == nil {
-			s.st.Slots = map[string]map[string]string{}
-		}
-	case os.IsNotExist(err):
-		// Nothing to load. The directory is created lazily on first write so a
-		// read-only mount still starts, and only fails when it must record.
-	default:
-		return nil, fmt.Errorf("store: read %s: %w", path, err)
-	}
-	return s, nil
-}
-
-// Path is the file this store writes.
-func (s *Store) Path() string { return s.path }
 
 // Sessions returns every recorded session, newest first.
 func (s *Store) Sessions() []model.Session {
@@ -118,7 +85,7 @@ func (s *Store) Sessions() []model.Session {
 func (s *Store) Get(id string) (model.Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, sess := range s.st.Sessions {
+	for _, sess := range s.sessions {
 		if sess.ID == id {
 			return sess, true
 		}
@@ -131,7 +98,7 @@ func (s *Store) Expired(now time.Time) []model.Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []model.Session
-	for _, sess := range s.st.Sessions {
+	for _, sess := range s.sessions {
 		if sess.Expired(now) {
 			out = append(out, sess)
 		}
@@ -144,7 +111,7 @@ func (s *Store) CountForIP(ip string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
-	for _, sess := range s.st.Sessions {
+	for _, sess := range s.sessions {
 		if sess.ClientIP == ip {
 			n++
 		}
@@ -156,7 +123,7 @@ func (s *Store) CountForIP(ip string) int {
 func (s *Store) Total() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return len(s.st.Sessions)
+	return len(s.sessions)
 }
 
 // OccupiedSlots returns the app ids an applab environment currently has in use,
@@ -165,7 +132,7 @@ func (s *Store) OccupiedSlots(envID string) map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string]string{}
-	for app, sessID := range s.st.Slots[envID] {
+	for app, sessID := range s.slots[envID] {
 		out[app] = sessID
 	}
 	return out
@@ -186,17 +153,17 @@ func (s *Store) Reserve(env model.Env, sess model.Session, lim Limits) (string, 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for _, existing := range s.st.Sessions {
+	for _, existing := range s.sessions {
 		if existing.ID == sess.ID {
 			return "", ErrExists
 		}
 	}
-	if lim.MaxTotal > 0 && len(s.st.Sessions) >= lim.MaxTotal {
+	if lim.MaxTotal > 0 && len(s.sessions) >= lim.MaxTotal {
 		return "", ErrAtCapacity
 	}
 	if lim.MaxPerIP > 0 {
 		n := 0
-		for _, existing := range s.st.Sessions {
+		for _, existing := range s.sessions {
 			if existing.ClientIP == sess.ClientIP {
 				n++
 			}
@@ -214,22 +181,12 @@ func (s *Store) Reserve(env model.Env, sess model.Session, lim Limits) (string, 
 		}
 	}
 
-	s.st.Sessions = append(s.st.Sessions, sess)
+	s.sessions = append(s.sessions, sess)
 	if app != "" {
-		if s.st.Slots[env.ID] == nil {
-			s.st.Slots[env.ID] = map[string]string{}
+		if s.slots[env.ID] == nil {
+			s.slots[env.ID] = map[string]string{}
 		}
-		s.st.Slots[env.ID][app] = sess.ID
-	}
-	if err := s.persist(); err != nil {
-		// Roll back so memory and disk agree. Without this a failed write would
-		// leave the slot claimed in memory but absent from the file, and a
-		// restart would hand it out twice.
-		s.st.Sessions = s.st.Sessions[:len(s.st.Sessions)-1]
-		if app != "" {
-			delete(s.st.Slots[env.ID], app)
-		}
-		return "", err
+		s.slots[env.ID][app] = sess.ID
 	}
 	return app, nil
 }
@@ -238,18 +195,18 @@ func (s *Store) Reserve(env model.Env, sess model.Session, lim Limits) (string, 
 func (s *Store) Complete(id, consoleURL, app, sandboxID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := range s.st.Sessions {
-		if s.st.Sessions[i].ID != id {
+	for i := range s.sessions {
+		if s.sessions[i].ID != id {
 			continue
 		}
-		s.st.Sessions[i].ConsoleURL = consoleURL
+		s.sessions[i].ConsoleURL = consoleURL
 		if app != "" {
-			s.st.Sessions[i].App = app
+			s.sessions[i].App = app
 		}
 		if sandboxID != "" {
-			s.st.Sessions[i].SandboxID = sandboxID
+			s.sessions[i].SandboxID = sandboxID
 		}
-		return s.persist()
+		return nil
 	}
 	return ErrNotFound
 }
@@ -263,8 +220,8 @@ func (s *Store) Drop(id string) error {
 	defer s.mu.Unlock()
 
 	found := false
-	kept := s.st.Sessions[:0]
-	for _, sess := range s.st.Sessions {
+	kept := s.sessions[:0]
+	for _, sess := range s.sessions {
 		if sess.ID == id {
 			found = true
 			continue
@@ -274,24 +231,24 @@ func (s *Store) Drop(id string) error {
 	if !found {
 		return nil
 	}
-	s.st.Sessions = kept
-	for envID, slots := range s.st.Slots {
+	s.sessions = kept
+	for envID, slots := range s.slots {
 		for app, sessID := range slots {
 			if sessID == id {
 				delete(slots, app)
 			}
 		}
 		if len(slots) == 0 {
-			delete(s.st.Slots, envID)
+			delete(s.slots, envID)
 		}
 	}
-	return s.persist()
+	return nil
 }
 
 // freeSlot returns a free app id for an applab environment, or "" if none is
 // free. Callers hold the lock.
 func (s *Store) freeSlot(env model.Env) string {
-	used := s.st.Slots[env.ID]
+	used := s.slots[env.ID]
 	for _, app := range env.Slots {
 		if _, taken := used[app]; !taken {
 			return app
@@ -300,59 +257,15 @@ func (s *Store) freeSlot(env model.Env) string {
 	return ""
 }
 
-// snapshot copies the session list for a caller to read outside the lock.
-// Callers hold the lock.
+// snapshot copies the session list for a caller to read outside the lock, newest
+// first. Callers hold the lock.
 func (s *Store) snapshot() []model.Session {
-	out := make([]model.Session, len(s.st.Sessions))
-	copy(out, s.st.Sessions)
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].CreatedAt.After(out[j].CreatedAt)
-	})
+	out := make([]model.Session, len(s.sessions))
+	copy(out, s.sessions)
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].CreatedAt.After(out[j-1].CreatedAt); j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
 	return out
-}
-
-// persist writes the whole state atomically. Callers hold the lock.
-//
-// The temp-file-and-rename dance is what makes the file never half-written: a
-// reader either sees the previous state or the next one, never a truncation. The
-// fsync before the rename is what makes that true across a crash, and the fsync
-// of the directory is what makes the rename itself durable.
-func (s *Store) persist() error {
-	data, err := json.MarshalIndent(s.st, "", "  ")
-	if err != nil {
-		return fmt.Errorf("store: encode state: %w", err)
-	}
-	data = append(data, '\n')
-
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("store: create %s: %w", dir, err)
-	}
-
-	tmp, err := os.CreateTemp(dir, ".labs-*.tmp")
-	if err != nil {
-		return fmt.Errorf("store: temp file in %s: %w", dir, err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once the rename has moved it
-
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("store: write %s: %w", tmpName, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("store: sync %s: %w", tmpName, err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("store: close %s: %w", tmpName, err)
-	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		return fmt.Errorf("store: rename onto %s: %w", s.path, err)
-	}
-	if d, err := os.Open(dir); err == nil {
-		_ = d.Sync()
-		_ = d.Close()
-	}
-	return nil
 }
