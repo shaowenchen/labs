@@ -191,30 +191,34 @@ Everything is an environment variable; there is no config file.
 
 **There is no environment list to write.** One entry in `LABS_REPOS` is one
 environment, and everything a repository implies — the project (`applab` or
-`sandboxlab`, from the name), the served path (`/applab`, `/sandbox`), the
-workflow that brings it up, and the domain (the repository name under
-`LABS_DOMAIN_SUFFIX`) — is derived from it. The key is generated for you and
-handed to the environment in the dispatch.
+`sandboxlab`, from the name), the served path (`/applab`, `/sandbox`) and the
+workflow that brings it up — is derived from it. The key is generated for you.
 
 ```bash
-LABS_GITHUB_TOKEN=...                       # Actions: read and write on the repos below
-LABS_REPOS=shaowenchen/applab               # one entry = one environment
-LABS_DOMAIN_SUFFIX=chenshaowen.com          # applab is served at applab.chenshaowen.com
+LABS_GITHUB_TOKEN=...          # read and write on the repositories below
+LABS_REPOS=shaowenchen/applab  # one entry = one environment
 ```
 
-That is a whole deployment. `applab` is served at `applab.chenshaowen.com`, and
-the environment is started with whatever key labs generated — no secret to set
-in the other repository at all.
+That is the whole configuration. The environment's **address is not configured
+either** — it is read back from the environment's own run log, where the
+debugger workflow prints it (`Open the console: <url>`). That is the only way to
+learn a hostname that belongs to whatever tunnel the deployment owns, and it
+means there is nothing to type in and nothing to keep in sync.
 
 Two optional overrides, named for the repository with its name uppercased
-(`APPLAB` for `shaowenchen/applab`): `LABS_DOMAIN_APPLAB` for a hostname that
-does not fit the suffix, and `LABS_KEY_APPLAB` to use a key configured out of
-band instead of a generated one.
+(`APPLAB` for `shaowenchen/applab`):
 
-The one thing that cannot have a sensible default is the domain, because the
-hostname belongs to whatever tunnel the deployment owns. **It must be stable
-across runs** — a named Cloudflare tunnel, not a quick one — because it is the
-address the service polls to find the environment.
+- **`LABS_DOMAIN_APPLAB`** (or `LABS_DOMAIN_SUFFIX`, a shared suffix under which
+  a repository named `applab` is served at `applab.<suffix>`) — set the address
+  instead of discovering it, so an environment is reachable before its run has
+  printed anything.
+- **`LABS_KEY_APPLAB`** — use a key configured out of band, for instance one you
+  rotate yourself, instead of a generated one.
+
+Whatever the address, it must be the hostname of a **named** Cloudflare tunnel,
+which is stable across runs; a quick tunnel is assigned a new hostname each time.
+Without a configured domain this only matters for discovery, which caches the
+address for the life of a run.
 
 **A missing variable does not stop the service.** It starts, answers `/healthz`,
 and reports what is wrong through its log, `/readyz` and `GET /api/v1/config` —

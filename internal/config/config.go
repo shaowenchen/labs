@@ -271,10 +271,8 @@ func (c Config) validateEnv(e model.Env) []string {
 		add("environment %q names no ref", e.ID)
 	case !validBasePath(e.BasePath):
 		add("environment %q has base_path %q, which must be empty or start with / and not end with one", e.ID, e.BasePath)
-	case e.Domain == "":
-		add("environment %q has no domain: set LABS_DOMAIN_SUFFIX to the domain environments are served under, or LABS_DOMAIN_%s to this one's hostname", e.ID, e.ID)
-	case !validHost(e.Domain):
-		add("environment %q has domain %q, which must be a bare hostname with no scheme or path", e.ID, e.Domain)
+	case e.Domain != "" && !validHost(e.Domain):
+		add("environment %q has domain %q, which must be a bare hostname with no scheme or path (or leave it out and let the address be read from the environment's own run log)", e.ID, e.Domain)
 	case e.APIKey == "":
 		add("environment %q has no key: set LABS_KEY_%s to the key that environment is configured with", e.ID, e.ID)
 	case e.Capacity <= 0:

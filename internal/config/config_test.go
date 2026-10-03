@@ -279,11 +279,26 @@ func TestMissingKeyIsGeneratedNotAProblem(t *testing.T) {
 	}
 }
 
-func TestMissingDomainIsAProblem(t *testing.T) {
+// No domain is not a problem: the address is read from the environment's own
+// run log. That is what lets a deployment be a token and a repository list.
+func TestMissingDomainIsNotAProblem(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_DOMAIN_SUFFIX": ""})
 	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_DOMAIN_SUFFIX") {
-		t.Fatalf("want a problem naming LABS_DOMAIN_SUFFIX, got %v", cfg.Problems)
+	if !cfg.Usable() {
+		t.Fatalf("a configuration without a domain should be usable, problems: %v", cfg.Problems)
+	}
+	if cfg.Envs[0].Domain != "" {
+		t.Errorf("domain = %q, want empty so it is discovered", cfg.Envs[0].Domain)
+	}
+}
+
+// A domain that is set to something unusable is still a problem: it is a typo,
+// and silently ignoring it would hide it.
+func TestBadDomainIsAProblem(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_DOMAIN_APPLAB": "https://a.example.com"})
+	cfg := mustLoad(t)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "domain") {
+		t.Fatalf("want a problem about the domain shape, got %v", cfg.Problems)
 	}
 }
 
@@ -300,14 +315,6 @@ func TestZeroSlotsIsAProblem(t *testing.T) {
 	cfg := mustLoad(t)
 	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_ENV_SLOTS") {
 		t.Fatalf("want a problem about the slot count, got %v", cfg.Problems)
-	}
-}
-
-func TestBadDomainIsAProblem(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_DOMAIN_APPLAB": "https://a.example.com"})
-	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "domain") {
-		t.Fatalf("want a problem about the domain shape, got %v", cfg.Problems)
 	}
 }
 

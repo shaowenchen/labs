@@ -92,6 +92,39 @@ func (c *Client) Runs(ctx context.Context, repo, workflow, ref string, limit int
 	return out.WorkflowRuns, nil
 }
 
+// RunLogs returns a run's log as plain text.
+//
+// GitHub answers the log endpoint with a redirect to a signed URL on a blob
+// host, so following redirects is what makes this work — the default client
+// does, and the Authorization header is dropped on the cross-host hop by Go's
+// own redirect handling, which is what the signed URL expects.
+func (c *Client) RunLogs(ctx context.Context, repo string, runID int64) (string, error) {
+	path := fmt.Sprintf("/repos/%s/actions/runs/%d/logs", repo, runID)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Authorization", "Bearer "+c.token)
+
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", &APIError{Status: resp.StatusCode, Method: http.MethodGet, Path: path, Body: strings.TrimSpace(string(raw))}
+	}
+	return string(raw), nil
+}
+
 // DispatchAndFind dispatches a run and returns it once GitHub has created it.
 //
 // The wait is bounded and short: a dispatched run appears within a few seconds

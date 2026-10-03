@@ -97,17 +97,22 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 		}
 	}
 
+	gh := gha.New(cfg.GitHubAPI, cfg.GitHubToken)
+
 	manager := session.New(cfg, st, drivers, log)
+	// For environments configured with no domain, the address is read from the
+	// environment's own run log — the only way to learn a hostname that belongs
+	// to whatever tunnel the deployment owns.
+	manager.WithDiscovery(gha.NewDiscoverer(gh).Discover)
 
 	// Keep the environments warm. Only started when the configuration can
 	// actually dispatch: a keeper with no token or no repositories would fail
 	// on every tick, which is noise that hides the configuration problem the
 	// operator needs to see.
 	if cfg.KeepWarm && cfg.Usable() {
-		targets := keeperTargets(cfg)
 		keeper := gha.NewKeeper(gha.KeeperConfig{
-			Client:   gha.New(cfg.GitHubAPI, cfg.GitHubToken),
-			Targets:  targets,
+			Client:   gh,
+			Targets:  keeperTargets(cfg),
 			Interval: cfg.KeepWarmInterval,
 			Lifetime: gha.LifetimeForRun(cfg.DispatchSessionHours),
 			Margin:   cfg.RedispatchMargin,

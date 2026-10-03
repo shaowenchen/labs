@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,6 +69,12 @@ type Manager struct {
 	// /readyz — or a provision — open indefinitely.
 	readyTimeout time.Duration
 
+	// discover finds where an environment lives when it was not configured with
+	// a domain: it reads the address the environment printed in its own run log.
+	// Nil when no discovery is available, and it is consulted only for
+	// environments whose domain is empty.
+	discover func(ctx context.Context, env model.Env) (string, bool)
+
 	mu    sync.Mutex
 	ready map[string]readyEntry
 }
@@ -94,6 +101,13 @@ func New(cfg config.Config, st *store.Store, drivers map[model.Kind]driver.Drive
 // WithClock replaces the clock, for tests.
 func (m *Manager) WithClock(now func() time.Time) *Manager {
 	m.now = now
+	return m
+}
+
+// WithDiscovery sets the function used to find an environment's address when it
+// was not configured with one.
+func (m *Manager) WithDiscovery(fn func(ctx context.Context, env model.Env) (string, bool)) *Manager {
+	m.discover = fn
 	return m
 }
 
@@ -126,6 +140,15 @@ func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP strin
 			continue
 		}
 		sawReady = true
+
+		// An environment whose address was discovered rather than configured is
+		// probed and provisioned at that address: the driver needs the same host
+		// the probe succeeded against.
+		if base, ok := m.baseURLFor(ctx, env); ok {
+			if resolved, ok := envAt(env, base); ok {
+				env = resolved
+			}
+		}
 
 		sess := model.Session{
 			ID:        NewID(),
@@ -321,6 +344,10 @@ func (m *Manager) ReadyAny(ctx context.Context) bool {
 
 // envReady probes an environment, reusing a recent probe so a burst of requests
 // does not stampede a freshly started environment.
+//
+// An environment with no configured domain is probed at the address its own run
+// log reported, discovered once and cached; until that address is known it is
+// simply not ready, which is the ordinary state while its run is still coming up.
 func (m *Manager) envReady(ctx context.Context, drv driver.Driver, env model.Env) driver.Ready {
 	m.mu.Lock()
 	if e, ok := m.ready[env.ID]; ok && m.now().Sub(e.at) < m.readyTTL {
@@ -329,9 +356,23 @@ func (m *Manager) envReady(ctx context.Context, drv driver.Driver, env model.Env
 	}
 	m.mu.Unlock()
 
+	probe := env
+	if probe.Domain == "" {
+		base, ok := m.baseURLFor(ctx, env)
+		if !ok {
+			r := driver.Ready{Message: "waiting for the environment to report its address in its run log"}
+			m.remember(env.ID, r)
+			return r
+		}
+		probe.Domain = strings.TrimPrefix(strings.TrimPrefix(base, "https://"), "http://")
+		if strings.HasPrefix(base, "http://") {
+			probe.Scheme = "http"
+		}
+	}
+
 	probeCtx, cancel := context.WithTimeout(ctx, m.readyTimeout)
 	defer cancel()
-	r, err := drv.Ready(probeCtx, env)
+	r, err := drv.Ready(probeCtx, probe)
 	if err != nil {
 		// An error is the driver failing to ask, not the environment being down.
 		// Treated as "not ready" so a bug here degrades to a retryable 503
@@ -340,10 +381,47 @@ func (m *Manager) envReady(ctx context.Context, drv driver.Driver, env model.Env
 		r = driver.Ready{Message: err.Error()}
 	}
 
-	m.mu.Lock()
-	m.ready[env.ID] = readyEntry{at: m.now(), r: r}
-	m.mu.Unlock()
+	m.remember(env.ID, r)
 	return r
+}
+
+// envAt returns env with its scheme and host replaced by those of base, keeping
+// its base path. It is how a discovered address is folded into the environment
+// the driver is handed, so the driver reaches exactly what the probe reached.
+func envAt(env model.Env, base string) (model.Env, bool) {
+	scheme, rest := "https", base
+	if i := strings.Index(base, "://"); i >= 0 {
+		scheme, rest = base[:i], base[i+3:]
+	}
+	host := rest
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		host = rest[:i]
+	}
+	if host == "" {
+		return env, false
+	}
+	env.Scheme = scheme
+	env.Domain = host
+	return env, true
+}
+
+// baseURLFor returns an environment's address, discovering it from the run log
+// when it was not configured. A discovered address is cached for the life of the
+// process; a configured one never needs this.
+func (m *Manager) baseURLFor(ctx context.Context, env model.Env) (string, bool) {
+	if env.Domain != "" {
+		return env.BaseURL(), true
+	}
+	if m.discover == nil {
+		return "", false
+	}
+	return m.discover(ctx, env)
+}
+
+func (m *Manager) remember(envID string, r driver.Ready) {
+	m.mu.Lock()
+	m.ready[envID] = readyEntry{at: m.now(), r: r}
+	m.mu.Unlock()
 }
 
 func (m *Manager) envsOf(kind model.Kind) []model.Env {
