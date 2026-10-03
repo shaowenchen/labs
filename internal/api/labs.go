@@ -152,16 +152,14 @@ func (s *Server) provisionError(err error) *apiError {
 	case errors.Is(err, session.ErrUnknownKind):
 		return BadRequest("%s", err.Error())
 	case errors.Is(err, session.ErrNoReadyEnv):
-		// Say which of the two situations this is. "One is being started" is only
-		// true when something is actually starting one — the keeper. With it off,
-		// or on a host with no long-lived process to run it, nothing is, and
-		// claiming otherwise sends the reader off to wait for something that is
-		// never coming.
-		msg := "no lab environment is available right now, and nothing is starting one; start the debugger workflow in the repository to bring one up"
-		if s.cfg.KeepWarm {
-			msg = "no lab environment is available right now; one is being started"
-		}
-		return Errorf(http.StatusServiceUnavailable, "%s", msg).Retryable().WithRetryAfter(60)
+		// Reaching here means the deployment is configured, so the request path
+		// has just tried to start an environment — either it did, and this is
+		// "come back in a few minutes", or it could not reach GitHub to try.
+		// Both are retryable; the environment takes minutes to boot, so a
+		// caller cannot be served by this request either way.
+		return Errorf(http.StatusServiceUnavailable,
+			"no lab environment is available right now; one is being started, which takes a few minutes").
+			Retryable().WithRetryAfter(120)
 	case errors.Is(err, store.ErrAtCapacity):
 		return Errorf(http.StatusServiceUnavailable, "all labs are in use right now; try again shortly").
 			Retryable().WithRetryAfter(30)

@@ -253,3 +253,57 @@ func TestEqualID(t *testing.T) {
 		t.Error("different ids should not compare equal")
 	}
 }
+
+// With nothing up and a way to start one, a provision starts an environment —
+// this is what lets a serverless host, where a request is the only thing that
+// runs, bring an environment up by asking for a lab. The request itself cannot
+// wait the minutes it takes to boot, so it answers "not yet" and the environment
+// it started is there for the next one.
+func TestProvisionStartsAnEnvironmentWhenNoneIsUp(t *testing.T) {
+	drv := &fakeDriver{ready: false}
+	st := store.New()
+	m := New(testConfig(), st, map[model.Kind]driver.Driver{model.KindApplab: drv},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	// A clock the test can advance, so the readiness cache (15s) is past by the
+	// second request.
+	now := time.Now()
+	m.WithClock(func() time.Time { return now })
+
+	var started []string
+	m.WithStarter(func(_ context.Context, env model.Env) bool {
+		started = append(started, env.ID)
+		drv.ready = true // the start brought the environment up
+		return true
+	})
+
+	_, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	if !errors.Is(err, ErrNoReadyEnv) {
+		t.Fatalf("Provision = %v, want ErrNoReadyEnv (the environment is still booting)", err)
+	}
+	if len(started) != 1 {
+		t.Fatalf("expected one start attempt, got %v", started)
+	}
+
+	// The next request, once the environment is up, gets a lab.
+	now = now.Add(time.Minute)
+	got, err := m.Provision(context.Background(), model.KindApplab, "2.2.2.2")
+	if err != nil {
+		t.Fatalf("Provision after the environment came up: %v", err)
+	}
+	if got.APIKey == "" {
+		t.Error("no lab was delivered after starting the environment")
+	}
+}
+
+// With nothing up and no way to start one, the answer is "nothing is up", not a
+// delivery — and it says so without claiming a start.
+func TestProvisionWithoutAStarterReportsNoEnvironment(t *testing.T) {
+	drv := &fakeDriver{ready: false}
+	m, _ := testManager(t, drv, testConfig())
+
+	_, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	if !errors.Is(err, ErrNoReadyEnv) {
+		t.Fatalf("Provision = %v, want ErrNoReadyEnv", err)
+	}
+}

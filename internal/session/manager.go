@@ -75,6 +75,13 @@ type Manager struct {
 	// environments whose domain is empty.
 	discover func(ctx context.Context, env model.Env) (string, bool)
 
+	// start makes sure an environment is coming up, dispatching a run if none is
+	// active. It is what lets a request bring an environment up on a host with
+	// no keeper running — a serverless one, where a request is the only thing
+	// that can. Nil means nothing can start one, and a request that finds none
+	// up is answered as such.
+	start func(ctx context.Context, env model.Env) bool
+
 	mu    sync.Mutex
 	ready map[string]readyEntry
 }
@@ -111,6 +118,13 @@ func (m *Manager) WithDiscovery(fn func(ctx context.Context, env model.Env) (str
 	return m
 }
 
+// WithStarter sets the function used to start an environment when a request
+// finds none up.
+func (m *Manager) WithStarter(fn func(ctx context.Context, env model.Env) bool) *Manager {
+	m.start = fn
+	return m
+}
+
 // Provision delivers one lab.
 //
 // It tries every environment of the requested kind that is up and has room, and
@@ -126,13 +140,36 @@ func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP strin
 
 	lim := store.Limits{MaxTotal: m.cfg.SessionCeiling(), MaxPerIP: m.cfg.MaxSessionsPerIP}
 	now := m.now()
+
+	res, err, retry := m.provisionPass(ctx, kind, clientIP, lim, now)
+	if err != nil || !retry {
+		return res, err
+	}
+
+	// Nothing is up. If something can start one, start it — a caller asking for
+	// a lab is a good reason to bring an environment up, and on a host with no
+	// keeper running it is the only thing that will. The environment takes
+	// minutes to boot, so this request cannot wait for it: it answers "not yet",
+	// and the environment it started is there for the next one.
+	if m.startOne(ctx, kind) {
+		return Result{}, fmt.Errorf("%w: no %s environment was up, so one is being started", ErrNoReadyEnv, kind)
+	}
+	return Result{}, fmt.Errorf("%w: no %s environment is up", ErrNoReadyEnv, kind)
+}
+
+// provisionPass is one pass over the environments of a kind.
+//
+// It returns the delivered lab and done when one was made; an error when the
+// attempt should stop; and retry when nothing was up but starting an
+// environment might change that.
+func (m *Manager) provisionPass(ctx context.Context, kind model.Kind, clientIP string, lim store.Limits, now time.Time) (Result, error, bool) {
 	sawReady := false
 	var limitErr error
 
 	for _, env := range m.envsOf(kind) {
 		drv := m.drivers[kind]
 		if drv == nil {
-			return Result{}, fmt.Errorf("%w: no driver for %q", ErrUnknownKind, kind)
+			return Result{}, fmt.Errorf("%w: no driver for %q", ErrUnknownKind, kind), false
 		}
 
 		r := m.envReady(ctx, drv, env)
@@ -172,7 +209,7 @@ func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP strin
 			}
 			continue
 		case err != nil:
-			return Result{}, fmt.Errorf("reserve a slot in %s: %w", env.ID, err)
+			return Result{}, fmt.Errorf("reserve a slot in %s: %w", env.ID, err), false
 		}
 
 		sess.App = app
@@ -186,7 +223,7 @@ func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP strin
 			if dropErr := m.store.Drop(sess.ID); dropErr != nil {
 				m.log.Warn("could not release a slot after a failed provision", "env", env.ID, "session", sess.ID, "error", dropErr)
 			}
-			return Result{}, fmt.Errorf("provision in %s: %w", env.ID, err)
+			return Result{}, fmt.Errorf("provision in %s: %w", env.ID, err), false
 		}
 
 		console := prov.ConsoleURL
@@ -194,7 +231,7 @@ func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP strin
 			console = r.ConsoleURL
 		}
 		if err := m.store.Complete(sess.ID, console, prov.App, prov.SandboxID); err != nil {
-			return Result{}, fmt.Errorf("record the session: %w", err)
+			return Result{}, fmt.Errorf("record the session: %w", err), false
 		}
 		sess.ConsoleURL = console
 		sess.App = prov.App
@@ -208,17 +245,35 @@ func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP strin
 			"sandbox", prov.SandboxID,
 			"expires_at", sess.ExpiresAt.Format(time.RFC3339),
 		)
-		return Result{Session: sess, ConsoleURL: console, APIKey: prov.APIKey, Warning: prov.Warning}, nil
+		return Result{Session: sess, ConsoleURL: console, APIKey: prov.APIKey, Warning: prov.Warning}, nil, false
 	}
 
+	// Nothing was delivered. If a limit stopped every environment, that is the
+	// answer and starting one would not help; otherwise it is worth trying to
+	// start one.
 	switch {
 	case limitErr != nil:
-		return Result{}, limitErr
+		return Result{}, limitErr, false
 	case sawReady:
-		return Result{}, store.ErrAtCapacity
+		return Result{}, store.ErrAtCapacity, false
 	default:
-		return Result{}, fmt.Errorf("%w: no %s environment is up", ErrNoReadyEnv, kind)
+		return Result{}, nil, true
 	}
+}
+
+// startOne dispatches a run for one environment of the kind, so a request that
+// found nothing up gets an environment started. It reports whether a start was
+// attempted, which is what decides whether a second pass is worth making.
+func (m *Manager) startOne(ctx context.Context, kind model.Kind) bool {
+	if m.start == nil {
+		return false
+	}
+	for _, env := range m.envsOf(kind) {
+		if m.start(ctx, env) {
+			return true
+		}
+	}
+	return false
 }
 
 // Get returns a recorded session.

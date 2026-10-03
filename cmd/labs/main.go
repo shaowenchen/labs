@@ -99,28 +99,44 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 
 	gh := gha.New(cfg.GitHubAPI, cfg.GitHubToken)
 
+	// The keeper both keeps environments warm in the background and starts one
+	// on demand when a request finds none up. On a host with no long-lived
+	// process the background loop does not run, but the on-demand path still
+	// works — it is a request, not a timer — so a caller can bring an
+	// environment up simply by asking for a lab.
+	keeper := gha.NewKeeper(gha.KeeperConfig{
+		Client:   gh,
+		Targets:  keeperTargets(cfg),
+		Interval: cfg.KeepWarmInterval,
+		Lifetime: gha.LifetimeForRun(cfg.DispatchSessionHours),
+		Margin:   cfg.RedispatchMargin,
+		Log:      log,
+	})
+	targetByEnv := map[string]gha.Target{}
+	for _, t := range keeperTargets(cfg) {
+		targetByEnv[t.ID] = t
+	}
+
 	manager := session.New(cfg, st, drivers, log)
 	// For environments configured with no domain, the address is read from the
-	// environment's own run log — the only way to learn a hostname that belongs
-	// to whatever tunnel the deployment owns.
+	// environment's own run log.
 	manager.WithDiscovery(gha.NewDiscoverer(gh).Discover)
-
-	// Keep the environments warm. Only started when the configuration can
-	// actually dispatch: a keeper with no token or no repositories would fail
-	// on every tick, which is noise that hides the configuration problem the
-	// operator needs to see.
-	if cfg.KeepWarm && cfg.Usable() {
-		keeper := gha.NewKeeper(gha.KeeperConfig{
-			Client:   gh,
-			Targets:  keeperTargets(cfg),
-			Interval: cfg.KeepWarmInterval,
-			Lifetime: gha.LifetimeForRun(cfg.DispatchSessionHours),
-			Margin:   cfg.RedispatchMargin,
-			Log:      log,
+	// A request that finds nothing up starts one, unless the configuration
+	// cannot dispatch at all.
+	if cfg.Usable() {
+		manager.WithStarter(func(ctx context.Context, env model.Env) bool {
+			t, ok := targetByEnv[env.ID]
+			if !ok {
+				return false
+			}
+			return keeper.EnsureRunning(ctx, t)
 		})
+	}
+
+	if cfg.KeepWarm && cfg.Usable() {
 		go keeper.Run(ctx)
 	} else if !cfg.KeepWarm {
-		log.Info("LABS_KEEPWARM is off; environments are not being kept warm")
+		log.Info("LABS_KEEPWARM is off; an environment is started only when a request needs one")
 	}
 
 	// Make the records a later provision needs exist ahead of the first request,

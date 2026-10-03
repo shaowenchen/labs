@@ -106,6 +106,53 @@ func (k *Keeper) Tick(ctx context.Context) {
 	}
 }
 
+// EnsureRunning makes sure the environment is coming up and reports whether a
+// run is now active or was just dispatched.
+//
+// It is the same decision Tick makes, exposed for the request path: on a host
+// with no long-lived process to run the keeper, a request is the only thing
+// that can start an environment, and it should — a caller asking for a lab
+// should get one, even if nobody was keeping the environment warm.
+//
+// true means "a run is up, or is now queued" — the caller should look again
+// shortly. false means nothing was dispatched and nothing is running: either
+// listing runs failed, or there is no target for the environment.
+func (k *Keeper) EnsureRunning(ctx context.Context, t Target) bool {
+	lock := k.lockFor(t.ID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	runs, err := k.client.Runs(ctx, t.Repo, t.Workflow, t.Ref, 10)
+	if err != nil {
+		// A listing that fails says nothing about whether a run is up. Answer no
+		// rather than dispatch: a blind dispatch could cancel a live run's
+		// successor, and the caller can try again.
+		k.log.Warn("could not list runs", "env", t.ID, "repo", t.Repo, "error", err)
+		return false
+	}
+
+	var (
+		hasQueued bool
+		newestRun *Run
+	)
+	for i := range runs {
+		r := runs[i]
+		if r.Status == "queued" {
+			hasQueued = true
+		}
+		if newestRun == nil || r.begun().After(newestRun.begun()) {
+			newestRun = &runs[i]
+		}
+	}
+
+	switch {
+	case hasQueued, newestRun != nil && newestRun.Running():
+		return true
+	default:
+		return k.dispatch(ctx, t, "a request needed an environment and none was running")
+	}
+}
+
 // tickTarget is the state machine for one environment.
 //
 // The rule that the whole thing turns on: never dispatch while a run is already
@@ -163,17 +210,18 @@ func (k *Keeper) tickTarget(ctx context.Context, t Target) {
 	}
 }
 
-// dispatch starts a run and logs the outcome. It never returns an error to its
-// caller: a failed dispatch is a thing to retry on the next tick, not a reason
-// to stop keeping the other environments warm.
-func (k *Keeper) dispatch(ctx context.Context, t Target, why string) {
-	k.log.Info("dispatching a successor run", "env", t.ID, "repo", t.Repo, "workflow", t.Workflow, "reason", why)
+// dispatch starts a run and reports whether one was started. It logs the
+// outcome rather than returning an error: a failed dispatch is a thing to retry
+// on the next tick, or on the next request, not a reason to stop.
+func (k *Keeper) dispatch(ctx context.Context, t Target, why string) bool {
+	k.log.Info("dispatching a run", "env", t.ID, "repo", t.Repo, "workflow", t.Workflow, "reason", why)
 	run, err := k.client.DispatchAndFind(ctx, t.Repo, t.Workflow, t.Ref, t.Inputs, k.findTimeout)
 	if err != nil {
 		k.log.Warn("could not dispatch a run", "env", t.ID, "repo", t.Repo, "error", err)
-		return
+		return false
 	}
 	k.log.Info("dispatched", "env", t.ID, "run", run.ID, "url", run.HTMLURL, "status", run.Status)
+	return true
 }
 
 func (k *Keeper) lockFor(id string) *sync.Mutex {

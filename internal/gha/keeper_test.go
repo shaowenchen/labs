@@ -49,6 +49,9 @@ func (f *fakeGitHub) server() *httptest.Server {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.dispatches = append(f.dispatches, body)
+		// A real dispatch creates a run; mimic that, so a caller that waits for
+		// one to appear (DispatchAndFind) sees it.
+		f.runs = append(f.runs, Run{ID: int64(len(f.dispatches)), Status: "queued", CreatedAt: time.Now()})
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -208,5 +211,51 @@ func TestAPIErrorNamesRateLimit(t *testing.T) {
 	}
 	if !strings.Contains(e.Error(), "rate limit") {
 		t.Errorf("message should mention the rate limit: %s", e.Error())
+	}
+}
+
+// A request that finds nothing running starts a run — this is what brings an
+// environment up on a host with no keeper.
+func TestEnsureRunningDispatchesWhenNothingRuns(t *testing.T) {
+	f := &fakeGitHub{}
+	f.setRuns() // nothing
+	k := testKeeper(t, f, time.Now())
+
+	if !k.EnsureRunning(context.Background(), k.targets[0]) {
+		t.Fatal("EnsureRunning = false with nothing running; want a dispatch")
+	}
+	if n := f.dispatchCount(); n != 1 {
+		t.Fatalf("dispatched %d times, want 1", n)
+	}
+}
+
+// A request must not cancel a queued successor: the same rule the keeper turns
+// on. A run already queued means an environment is coming, so nothing is sent.
+func TestEnsureRunningDoesNotDispatchOverAQueuedRun(t *testing.T) {
+	now := time.Now()
+	f := &fakeGitHub{}
+	f.setRuns(Run{ID: 1, Status: "queued", CreatedAt: now})
+	k := testKeeper(t, f, now)
+
+	if !k.EnsureRunning(context.Background(), k.targets[0]) {
+		t.Fatal("EnsureRunning = false with a run queued; want true")
+	}
+	if n := f.dispatchCount(); n != 0 {
+		t.Fatalf("dispatched %d times over a queued run, want 0", n)
+	}
+}
+
+// A run already in progress means the environment is coming up; nothing sent.
+func TestEnsureRunningLeavesALiveRunAlone(t *testing.T) {
+	now := time.Now()
+	f := &fakeGitHub{}
+	f.setRuns(Run{ID: 1, Status: "in_progress", StartedAt: now.Add(-time.Minute)})
+	k := testKeeper(t, f, now)
+
+	if !k.EnsureRunning(context.Background(), k.targets[0]) {
+		t.Fatal("EnsureRunning = false with a live run; want true")
+	}
+	if n := f.dispatchCount(); n != 0 {
+		t.Fatalf("dispatched %d times with a live run, want 0", n)
 	}
 }

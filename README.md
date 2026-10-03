@@ -70,6 +70,15 @@ happens under the same lock that records the session, so two requests arriving
 together take two different slots, and a request that fails to mint a key gives
 its slot back rather than leaking it.
 
+## Starting an environment, on demand
+
+A request for a lab that finds nothing running **starts an environment itself**.
+That is what lets the service run on a host that starts it per request: the
+background keeper may not be running there, but a request is, and a request is
+enough to dispatch the workflow. The environment takes a few minutes to boot, so
+that request answers "one is being started" and the environment it started is
+there for the next one.
+
 ## Keeping the environment warm
 
 A GitHub-hosted job cannot run for more than six hours, and an environment is
@@ -144,7 +153,9 @@ Keeping an environment warm means holding a GitHub-hosted runner for as long as
 the environment is up. At a four-hour run replaced continuously, that is roughly
 **130 runner-hours a month, per warm environment** — which matters on a private
 repository and on the free tier (2,000 minutes a month). `LABS_KEEPWARM=false`
-turns the keeper off.
+turns the writer off: an environment is then started only when a request needs
+one, which costs a few minutes on the first request after a quiet spell but
+holds no runner at all in between.
 
 To remove the boot gap you need two environments of the same kind overlapping:
 while one drains, the other is already up. The workflows' `concurrency` group
@@ -230,7 +241,7 @@ value that was meant.
 
 It will not dispatch anything or hand out a lab until the configuration is
 complete: `/readyz` stays `503`, `POST /api/v1/labs` says the deployment is not
-configured, and the keeper is not started.
+configured, and nothing is started — neither the keeper nor an on-demand start.
 
 Two things are worth knowing at the top:
 
