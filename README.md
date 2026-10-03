@@ -161,24 +161,28 @@ domains and the keeper holds them in antiphase.
 
 ## What you have to do in the other repositories
 
-labs changes nothing in applab or sandboxlab. What it needs from them is
-configuration, and one small edit:
+**applab — nothing, if labs generates the key.** labs dispatches `debugger.yml`
+with the key it generated as the `api_key` input. applab's workflow already
+threads that through (`inputs.api_key || secrets.APPLAB_API_KEY`), so the
+environment comes up configured with the key labs holds, and there is no secret
+to set. The only other thing the environment needs is the tunnel credential it
+already uses — `CLOUDFLARE_TOKEN` — and a named tunnel whose hostname matches
+the domain you configured here.
 
-**applab — a secret, no file change.** Set the repository secret
-`APPLAB_API_KEY` to a fixed value and put the same value in `LABS_KEY_APPLAB`.
-The existing `debugger.yml` already reads it (`inputs.api_key ||
-secrets.APPLAB_API_KEY`), so an environment started without an `api_key` input
-uses it — and labs never sends one, so the value does not appear in a dispatch
-payload. Without this, every run generates a random key that labs cannot know.
-
-**applab — one line, for blue/green.** The `concurrency.group` change above.
+**applab — one line, for blue/green.** The `concurrency.group` change above,
+which lets two environments of the same kind run at once.
 
 **sandboxlab — not yet.** Its driver is not implemented; a configuration naming
-a sandboxlab environment is reported as a problem and that environment simply
-never becomes ready. When it is added, sandboxlab currently has a single
+a sandboxlab environment reports a problem and that environment simply never
+becomes ready. When it is added, sandboxlab currently has a single
 deployment-wide key with no per-user keys (they were removed upstream), so its
 sessions would share one credential — a real limitation, not a detail, and the
 reason applab came first.
+
+**If you would rather not have labs generate the key** — for instance because
+you rotate it yourself — set the repository secret `APPLAB_API_KEY` and put the
+same value in `LABS_KEY_APPLAB`. Then labs uses that key and does not send an
+`api_key` input.
 
 ## Configuration
 
@@ -188,19 +192,29 @@ Everything is an environment variable; there is no config file.
 **There is no environment list to write.** One entry in `LABS_REPOS` is one
 environment, and everything a repository implies — the project (`applab` or
 `sandboxlab`, from the name), the served path (`/applab`, `/sandbox`), the
-workflow that brings it up — is derived from it. Only two things cannot be
-derived, so there is one variable for each, named for the repository with its
-name uppercased:
+workflow that brings it up, and the domain (the repository name under
+`LABS_DOMAIN_SUFFIX`) — is derived from it. The key is generated for you and
+handed to the environment in the dispatch.
 
 ```bash
-LABS_GITHUB_TOKEN=...          # Actions: read and write on the repositories below
-LABS_REPOS=shaowenchen/applab  # one entry = one environment
-LABS_DOMAIN_APPLAB=applab-1.example.com
-LABS_KEY_APPLAB=<the environment's key>
+LABS_GITHUB_TOKEN=...                       # Actions: read and write on the repos below
+LABS_REPOS=shaowenchen/applab               # one entry = one environment
+LABS_DOMAIN_SUFFIX=chenshaowen.com          # applab is served at applab.chenshaowen.com
 ```
 
-Add a second repository and it needs its own pair: `shaowenchen/sandboxlab`
-would want `LABS_DOMAIN_SANDBOXLAB` and `LABS_KEY_SANDBOXLAB`.
+That is a whole deployment. `applab` is served at `applab.chenshaowen.com`, and
+the environment is started with whatever key labs generated — no secret to set
+in the other repository at all.
+
+Two optional overrides, named for the repository with its name uppercased
+(`APPLAB` for `shaowenchen/applab`): `LABS_DOMAIN_APPLAB` for a hostname that
+does not fit the suffix, and `LABS_KEY_APPLAB` to use a key configured out of
+band instead of a generated one.
+
+The one thing that cannot have a sensible default is the domain, because the
+hostname belongs to whatever tunnel the deployment owns. **It must be stable
+across runs** — a named Cloudflare tunnel, not a quick one — because it is the
+address the service polls to find the environment.
 
 **A missing variable does not stop the service.** It starts, answers `/healthz`,
 and reports what is wrong through its log, `/readyz` and `GET /api/v1/config` —

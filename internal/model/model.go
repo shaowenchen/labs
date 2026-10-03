@@ -74,9 +74,16 @@ type Env struct {
 
 	// APIKey is the environment's own key, which labs holds in order to mint
 	// per-session credentials. It is never serialised — a log line or a
-	// /config response must not carry it — and it comes from a dedicated
-	// LABS_KEY_<ID> variable rather than from the environment JSON.
+	// /config response must not carry it. Empty means labs made one up and
+	// hands it to the environment through the dispatch (see ManagedKey).
 	APIKey string `json:"-"`
+
+	// ManagedKey says labs chose this environment's key and passes it in the
+	// dispatch, rather than the environment having been configured with a key
+	// out of band. It is what decides whether the dispatch carries an api_key
+	// input — one that is only sent when the workflow declares it, because
+	// GitHub rejects a dispatch with an input the workflow does not know.
+	ManagedKey bool `json:"-"`
 }
 
 // DispatchInputs is the workflow_dispatch input map for this environment: the
@@ -86,12 +93,21 @@ type Env struct {
 // be told. The tunnel is a named Cloudflare one, which is what gives the
 // environment a stable domain — and a stable domain is the thing this service
 // polls, so it is not really optional.
+//
+// When the key is labs-managed the dispatch also carries it, so the environment
+// comes up configured with the key labs already holds and nothing has to be set
+// on the repository. That input is only added when the workflow declares it;
+// GitHub refuses a dispatch naming an input the workflow does not know.
 func (e Env) DispatchInputs(sessionHours string) map[string]string {
-	return map[string]string{
+	out := map[string]string{
 		"session_hours": sessionHours,
 		"tunnel":        "cloudflare",
 		"domain":        e.Domain,
 	}
+	if e.ManagedKey && e.APIKey != "" {
+		out["api_key"] = e.APIKey
+	}
+	return out
 }
 
 // BaseURL is the environment's root address: scheme, host and base path.

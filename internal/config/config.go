@@ -16,6 +16,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -97,6 +99,13 @@ type Config struct {
 	// is the number of app ids it lends out. It applies to every environment.
 	EnvSlots int
 
+	// DomainSuffix is the domain environments are served under, as a bare
+	// suffix: a repository named applab is served at applab.<suffix>. It is how
+	// a deployment whose repositories follow that naming needs no per-environment
+	// domain at all. Empty means every environment must name its own domain in
+	// LABS_DOMAIN_<ID>.
+	DomainSuffix string
+
 	// Envs are the environments, one per repository, each with its key resolved.
 	Envs []model.Env
 
@@ -130,6 +139,7 @@ func Load() (Config, error) {
 	setString(&cfg.GitHubAPI, "LABS_GITHUB_API", "https://api.github.com")
 	setString(&cfg.DispatchRef, "LABS_DISPATCH_REF", "main")
 	setString(&cfg.DispatchSessionHours, "LABS_DISPATCH_SESSION_HOURS", "4")
+	setString(&cfg.DomainSuffix, "LABS_DOMAIN_SUFFIX", "")
 
 	cfg.Listen = resolveListen(cfg.Listen)
 
@@ -172,7 +182,7 @@ func Load() (Config, error) {
 	}
 
 	cfg.Repos = splitList(os.Getenv("LABS_REPOS"))
-	cfg.Envs = buildEnvs(cfg.Repos, cfg.EnvSlots)
+	cfg.Envs = buildEnvs(cfg.Repos, cfg.EnvSlots, cfg.DomainSuffix)
 
 	cfg.Problems = append(cfg.Problems, cfg.Validate()...)
 	return cfg, nil
@@ -262,7 +272,7 @@ func (c Config) validateEnv(e model.Env) []string {
 	case !validBasePath(e.BasePath):
 		add("environment %q has base_path %q, which must be empty or start with / and not end with one", e.ID, e.BasePath)
 	case e.Domain == "":
-		add("environment %q has no domain: set LABS_DOMAIN_%s to the hostname it is served under", e.ID, e.ID)
+		add("environment %q has no domain: set LABS_DOMAIN_SUFFIX to the domain environments are served under, or LABS_DOMAIN_%s to this one's hostname", e.ID, e.ID)
 	case !validHost(e.Domain):
 		add("environment %q has domain %q, which must be a bare hostname with no scheme or path", e.ID, e.Domain)
 	case e.APIKey == "":
@@ -333,29 +343,53 @@ func basePathFor(kind model.Kind) string {
 // runs: one repository is one environment.
 //
 // Everything a repository implies is derived from its name — which project it
-// is from the owner, the served path from the project, the workflow file from
-// the two debugger conventions — so the only two things that have to be
-// configured are the two that cannot be guessed: the domain the environment is
-// served under (LABS_DOMAIN_<ID>) and the key it is configured with
-// (LABS_KEY_<ID>), where <ID> is the repository name uppercased.
-func buildEnvs(repos []string, slots int) []model.Env {
+// is, the path it is served under, the workflow that brings it up. The key is
+// generated when it is not configured, and handed to the environment through
+// the dispatch, so the common deployment needs only LABS_REPOS and a token.
+// The one thing that cannot be derived is the domain each environment is served
+// under, because it is the hostname of the tunnel that deployment happens to
+// own; it is the repository name under a shared suffix
+// (applab.<LABS_DOMAIN_SUFFIX>), or LABS_DOMAIN_<ID> for one that does not fit
+// that shape.
+func buildEnvs(repos []string, slots int, domainSuffix string) []model.Env {
 	envs := make([]model.Env, 0, len(repos))
 	for _, repo := range repos {
 		kind := kindFor(repo)
-		id := envID(repoName(repo))
-		envs = append(envs, model.Env{
+		name := repoName(repo)
+		id := envID(name)
+
+		domain := strings.TrimSpace(os.Getenv("LABS_DOMAIN_" + id))
+		if domain == "" && domainSuffix != "" {
+			domain = strings.ToLower(name) + "." + domainSuffix
+		}
+
+		env := model.Env{
 			ID:       id,
 			Kind:     kind,
 			Repo:     repo,
 			Workflow: workflowFor(kind),
 			Ref:      "main",
 			Scheme:   "https",
-			Domain:   strings.TrimSpace(os.Getenv("LABS_DOMAIN_" + id)),
+			Domain:   domain,
 			BasePath: basePathFor(kind),
 			Slots:    slotNames(slots),
 			Capacity: slots,
 			APIKey:   strings.TrimSpace(os.Getenv("LABS_KEY_" + id)),
-		})
+		}
+		if env.APIKey == "" {
+			// Nothing was configured, so labs chooses a key and gives it to the
+			// environment in the dispatch. That is what lets a deployment run on
+			// a token and a repository list alone.
+			key, err := generateKey()
+			if err != nil {
+				// crypto/rand failing is not something to continue past: every
+				// environment would then share one key.
+				panic("config: generating an API key: " + err.Error())
+			}
+			env.APIKey = key
+			env.ManagedKey = true
+		}
+		envs = append(envs, env)
 	}
 	return envs
 }
@@ -502,4 +536,17 @@ func splitList(v string) []string {
 		}
 	}
 	return out
+}
+
+// generateKey mints an environment key. It is 32 hex characters — 16 bytes —
+// long enough that guessing is not a threat model. It is generated once at
+// startup and lives only in memory and in the dispatches that carry it, so it
+// changes on every restart; that is why the environment is told it at dispatch
+// time rather than being configured with it out of band.
+func generateKey() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
 }

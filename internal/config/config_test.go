@@ -13,8 +13,7 @@ func setEnv(t *testing.T, overrides map[string]string) {
 	base := map[string]string{
 		"LABS_GITHUB_TOKEN":  "token",
 		"LABS_REPOS":         "o/applab",
-		"LABS_DOMAIN_APPLAB": "applab.example.com",
-		"LABS_KEY_APPLAB":    "admin-key",
+		"LABS_DOMAIN_SUFFIX": "example.com",
 	}
 	for k, v := range override(base, overrides) {
 		t.Setenv(k, v)
@@ -86,10 +85,18 @@ func TestRepositoryBecomesAnEnvironment(t *testing.T) {
 		t.Errorf("base_path = %q, want /applab", e.BasePath)
 	}
 	if e.Domain != "applab.example.com" {
-		t.Errorf("domain = %q, want the LABS_DOMAIN_APPLAB value", e.Domain)
+		t.Errorf("domain = %q, want applab.example.com (derived from the suffix)", e.Domain)
 	}
-	if e.APIKey != "admin-key" {
-		t.Errorf("api key = %q, want the LABS_KEY_APPLAB value", e.APIKey)
+	// No key was configured, so labs chose one and will hand it to the
+	// environment in the dispatch.
+	if e.APIKey == "" {
+		t.Error("a key should have been generated when none was configured")
+	}
+	if !e.ManagedKey {
+		t.Error("a generated key should be marked managed, so the dispatch carries it")
+	}
+	if len(e.APIKey) != 32 {
+		t.Errorf("generated key is %d characters, want 32", len(e.APIKey))
 	}
 	if e.Capacity != defaultEnvSlots || len(e.Slots) != defaultEnvSlots {
 		t.Errorf("capacity = %d, slots = %d, want %d of each", e.Capacity, len(e.Slots), defaultEnvSlots)
@@ -100,11 +107,7 @@ func TestRepositoryBecomesAnEnvironment(t *testing.T) {
 }
 
 func TestSandboxlabRepositoryIsRecognised(t *testing.T) {
-	setEnv(t, map[string]string{
-		"LABS_REPOS":             "o/sandboxlab",
-		"LABS_DOMAIN_SANDBOXLAB": "sb.example.com",
-		"LABS_KEY_SANDBOXLAB":    "sb-key",
-	})
+	setEnv(t, map[string]string{"LABS_REPOS": "o/sandboxlab"})
 	cfg := mustLoad(t)
 	if len(cfg.Envs) != 1 {
 		t.Fatalf("want one environment, got %d", len(cfg.Envs))
@@ -122,20 +125,54 @@ func TestSandboxlabRepositoryIsRecognised(t *testing.T) {
 	if e.Workflow != "sandboxlab.yml" {
 		t.Errorf("workflow = %q, want sandboxlab.yml", e.Workflow)
 	}
+	if e.Domain != "sandboxlab.example.com" {
+		t.Errorf("domain = %q, want sandboxlab.example.com", e.Domain)
+	}
 }
 
 func TestSeveralRepositoriesBecomeSeveralEnvironments(t *testing.T) {
-	setEnv(t, map[string]string{
-		"LABS_REPOS":             "o/applab,o/sandboxlab",
-		"LABS_DOMAIN_SANDBOXLAB": "sb.example.com",
-		"LABS_KEY_SANDBOXLAB":    "sb-key",
-	})
+	setEnv(t, map[string]string{"LABS_REPOS": "o/applab,o/sandboxlab"})
 	cfg := mustLoad(t)
 	if len(cfg.Envs) != 2 {
 		t.Fatalf("want two environments, got %d", len(cfg.Envs))
 	}
 	if cfg.TotalCapacity() != 2*defaultEnvSlots {
 		t.Errorf("TotalCapacity = %d, want %d", cfg.TotalCapacity(), 2*defaultEnvSlots)
+	}
+}
+
+// A per-environment domain overrides the suffix, for one that does not follow
+// the naming.
+func TestPerEnvironmentDomainOverridesTheSuffix(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_DOMAIN_APPLAB": "custom.example.org"})
+	if got := mustLoad(t).Envs[0].Domain; got != "custom.example.org" {
+		t.Errorf("domain = %q, want the per-environment value", got)
+	}
+}
+
+// A configured key is used as-is and is not marked managed, so the dispatch does
+// not carry one.
+func TestConfiguredKeyIsUsedAsIs(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_KEY_APPLAB": "my-own-key"})
+	e := mustLoad(t).Envs[0]
+	if e.APIKey != "my-own-key" {
+		t.Errorf("api key = %q, want the configured value", e.APIKey)
+	}
+	if e.ManagedKey {
+		t.Error("a configured key is not managed by labs")
+	}
+	if _, carried := e.DispatchInputs("4")["api_key"]; carried {
+		t.Error("a configured key should not be sent in the dispatch")
+	}
+}
+
+// A generated key is carried in the dispatch, so the environment comes up with
+// the key labs holds.
+func TestGeneratedKeyIsCarriedInTheDispatch(t *testing.T) {
+	setEnv(t, nil)
+	e := mustLoad(t).Envs[0]
+	if got := e.DispatchInputs("4")["api_key"]; got != e.APIKey {
+		t.Errorf("dispatch api_key = %q, want the generated key", got)
 	}
 }
 
@@ -228,19 +265,25 @@ func TestMissingRepoIsAProblem(t *testing.T) {
 	}
 }
 
-func TestMissingKeyPerEnvironmentIsAProblem(t *testing.T) {
+// A key left out is not a problem: labs generates one and hands it to the
+// environment. That is what lets a deployment run on a token and a repo list
+// alone.
+func TestMissingKeyIsGeneratedNotAProblem(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_KEY_APPLAB": ""})
 	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_KEY_APPLAB") {
-		t.Fatalf("want a problem naming LABS_KEY_APPLAB, got %v", cfg.Problems)
+	if !cfg.Usable() {
+		t.Fatalf("a configuration without a key should still be usable, problems: %v", cfg.Problems)
+	}
+	if !cfg.Envs[0].ManagedKey || cfg.Envs[0].APIKey == "" {
+		t.Fatalf("want a generated managed key, got %+v", cfg.Envs[0])
 	}
 }
 
 func TestMissingDomainIsAProblem(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_DOMAIN_APPLAB": ""})
+	setEnv(t, map[string]string{"LABS_DOMAIN_SUFFIX": ""})
 	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_DOMAIN_APPLAB") {
-		t.Fatalf("want a problem naming LABS_DOMAIN_APPLAB, got %v", cfg.Problems)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_DOMAIN_SUFFIX") {
+		t.Fatalf("want a problem naming LABS_DOMAIN_SUFFIX, got %v", cfg.Problems)
 	}
 }
 
