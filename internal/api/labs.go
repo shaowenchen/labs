@@ -40,6 +40,16 @@ type labResponse struct {
 // createLab delivers a lab, which is the product: one anonymous call, one
 // working environment, valid for the session TTL.
 func (s *Server) createLab(w http.ResponseWriter, r *http.Request) {
+	// A deployment that is not configured cannot serve a lab, and saying so
+	// plainly beats the generic "no environment is available" that an empty
+	// environment list would otherwise produce — the reader needs to know to go
+	// and set variables, not to wait.
+	if !s.cfg.Usable() {
+		fail(w, r, Errorf(http.StatusServiceUnavailable,
+			"this deployment is not configured yet; GET /api/v1/config lists what is missing").Retryable())
+		return
+	}
+
 	var req createLabRequest
 	// A body is optional; an empty one selects the default kind, which is the
 	// common case of "just give me a lab".

@@ -27,6 +27,8 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		"version":     buildinfo.String(),
 		"session_ttl": s.cfg.SessionTTL.String(),
 		"kinds":       list,
+		"configured":  s.cfg.Usable(),
+		"problems":    s.cfg.Problems,
 		"limits": map[string]any{
 			"max_sessions":        s.cfg.SessionCeiling(),
 			"max_sessions_per_ip": s.cfg.MaxSessionsPerIP,

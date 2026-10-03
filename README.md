@@ -174,16 +174,28 @@ payload. Without this, every run generates a random key that labs cannot know.
 **applab — one line, for blue/green.** The `concurrency.group` change above.
 
 **sandboxlab — not yet.** Its driver is not implemented; a configuration naming
-a sandboxlab environment is refused at startup. When it is added, sandboxlab
-currently has a single deployment-wide key with no per-user keys (they were
-removed upstream), so its sessions would share one credential — a real
-limitation, not a detail, and the reason applab came first.
+a sandboxlab environment is reported as a problem and that environment simply
+never becomes ready. When it is added, sandboxlab currently has a single
+deployment-wide key with no per-user keys (they were removed upstream), so its
+sessions would share one credential — a real limitation, not a detail, and the
+reason applab came first.
 
 ## Configuration
 
 See [`.env.example`](.env.example) for every variable and what it is for.
-Everything is an environment variable; there is no config file. A
-configuration that cannot work is refused at startup with the variable named.
+Everything is an environment variable; there is no config file.
+
+**A missing variable does not stop the service.** It starts, answers `/healthz`,
+and reports what is wrong through its log, `/readyz` and `GET /api/v1/config` —
+so a container that is not configured yet is a container that says so, rather
+than one that exits with a code indistinguishable from a crash. The only thing
+still fatal is a variable set to an unreadable value (a `LABS_SESSION_TTL` of
+`two hours`), because continuing would silently substitute the default for the
+value that was meant.
+
+It will not dispatch anything or hand out a lab until the configuration is
+complete: `/readyz` stays `503`, `POST /api/v1/labs` says the deployment is not
+configured, and the keeper is not started.
 
 Two things are worth knowing at the top:
 

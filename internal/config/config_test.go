@@ -56,56 +56,128 @@ func TestLoadResolvesTheDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadRequiresAToken(t *testing.T) {
+// The point of the loader's design: an empty environment is not an error. The
+// service starts and says what is missing.
+func TestLoadWithNothingSetStillReturnsAConfig(t *testing.T) {
+	// Clear anything the ambient environment might have.
+	for _, k := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS", "LABS_ENVIRONMENTS", "LABS_KEY_APPLAB_1", "LABS_LISTEN"} {
+		t.Setenv(k, "")
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned an error for an empty environment: %v", err)
+	}
+	if cfg.Usable() {
+		t.Fatal("a configuration with nothing set reported itself usable")
+	}
+	for _, want := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS", "LABS_ENVIRONMENTS"} {
+		if !hasProblem(cfg.Problems, want) {
+			t.Errorf("problems do not mention %s: %v", want, cfg.Problems)
+		}
+	}
+	if cfg.Listen == "" {
+		t.Error("Listen must still resolve so the server can bind")
+	}
+}
+
+// A variable set to an unreadable value is the one case that is still fatal: it
+// is a typo in a variable this service owns, and continuing would silently
+// substitute the default for the value the operator meant.
+func TestLoadFailsOnAnUnreadableDuration(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_SESSION_TTL": "two hours"})
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "LABS_SESSION_TTL") {
+		t.Fatalf("Load = %v, want an error naming LABS_SESSION_TTL", err)
+	}
+}
+
+func TestMissingTokenIsAProblem(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_GITHUB_TOKEN": ""})
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "LABS_GITHUB_TOKEN") {
-		t.Fatalf("Load = %v, want an error naming LABS_GITHUB_TOKEN", err)
+	cfg := mustLoad(t)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_GITHUB_TOKEN") {
+		t.Fatalf("want a problem naming LABS_GITHUB_TOKEN, got %v", cfg.Problems)
 	}
 }
 
-func TestLoadRequiresAKeyPerEnvironment(t *testing.T) {
+func TestMissingKeyPerEnvironmentIsAProblem(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_KEY_APPLAB_1": ""})
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "LABS_KEY_APPLAB_1") {
-		t.Fatalf("Load = %v, want an error naming the missing key variable", err)
+	cfg := mustLoad(t)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_KEY_APPLAB_1") {
+		t.Fatalf("want a problem naming the missing key variable, got %v", cfg.Problems)
 	}
 }
 
-func TestEnvironmentOutsideReposIsRefused(t *testing.T) {
+func TestEnvironmentOutsideReposIsAProblem(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_REPOS": "o/other"})
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "LABS_REPOS") {
-		t.Fatalf("Load = %v, want an error about the repo not being allowed", err)
+	cfg := mustLoad(t)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_REPOS") {
+		t.Fatalf("want a problem about the repo not being allowed, got %v", cfg.Problems)
 	}
 }
 
-func TestInvalidSessionHoursIsRefused(t *testing.T) {
+func TestInvalidSessionHoursIsAProblem(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_DISPATCH_SESSION_HOURS": "3"})
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "LABS_DISPATCH_SESSION_HOURS") {
-		t.Fatalf("Load = %v, want an error about the session-hours choice", err)
+	cfg := mustLoad(t)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_DISPATCH_SESSION_HOURS") {
+		t.Fatalf("want a problem about the session-hours choice, got %v", cfg.Problems)
 	}
 }
 
-func TestApplabWithoutSlotsIsRefused(t *testing.T) {
+func TestApplabWithoutSlotsIsAProblem(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_ENVIRONMENTS": `[{"id":"applab-1","kind":"applab","repo":"o/applab","workflow":"debugger.yml","ref":"main","domain":"a.example.com","capacity":1}]`,
 	})
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "slots") {
-		t.Fatalf("Load = %v, want an error about missing slots", err)
+	cfg := mustLoad(t)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "slots") {
+		t.Fatalf("want a problem about missing slots, got %v", cfg.Problems)
 	}
 }
 
-func TestBadDomainIsRefused(t *testing.T) {
+func TestBadDomainIsAProblem(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_ENVIRONMENTS": `[{"id":"applab-1","kind":"applab","repo":"o/applab","workflow":"debugger.yml","ref":"main","domain":"https://a.example.com","base_path":"/applab","slots":["lab-01"],"capacity":1}]`,
 	})
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "domain") {
-		t.Fatalf("Load = %v, want an error about the domain shape", err)
+	cfg := mustLoad(t)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "domain") {
+		t.Fatalf("want a problem about the domain shape, got %v", cfg.Problems)
 	}
+}
+
+func TestMalformedEnvironmentsJSONIsAProblem(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_ENVIRONMENTS": `{not an array}`})
+	cfg := mustLoad(t)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_ENVIRONMENTS") {
+		t.Fatalf("want a problem about the JSON, got %v", cfg.Problems)
+	}
+}
+
+// Every problem is reported at once, so one restart shows everything to fix
+// rather than one thing per attempt.
+func TestAllProblemsAreReportedTogether(t *testing.T) {
+	for _, k := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS", "LABS_ENVIRONMENTS"} {
+		t.Setenv(k, "")
+	}
+	cfg := mustLoad(t)
+	if len(cfg.Problems) < 3 {
+		t.Fatalf("want the missing variables reported together, got %v", cfg.Problems)
+	}
+}
+
+func mustLoad(t *testing.T) Config {
+	t.Helper()
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return cfg
+}
+
+func hasProblem(problems []string, substr string) bool {
+	for _, p := range problems {
+		if strings.Contains(p, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func TestSessionCeilingPrefersTheConfiguredValue(t *testing.T) {

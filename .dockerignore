@@ -1,0 +1,28 @@
+# Keep the build context to what the build needs.
+#
+# The image builds from source, so the source has to go in; everything else is
+# either a build artifact, local state, or something a public registry has no
+# business receiving.
+
+# Build output and local runs.
+bin/
+*.out
+
+# Secrets. A .env is the one file most likely to be sitting next to the source
+# and the one that must never reach a build layer.
+.env
+
+# Git history: the version is passed as a build arg, so the image does not need
+# the repository to know what it is, and .git is the largest thing in the tree.
+.git/
+.gitignore
+
+# Editors and the OS.
+.idea/
+.vscode/
+.DS_Store
+
+# The deployment files are not part of the build, but keeping them out is
+# tidier and they are re-read from the repository by whoever deploys.
+docker-compose.yml
+Caddyfile

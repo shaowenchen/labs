@@ -2,8 +2,9 @@
 # Build
 # ---------------------------------------------------------------------------
 # CGO is off so the binary is static and carries no libc dependency of its own.
-# The module is HTTP clients and a JSON file — nothing in it needs cgo — so this
-# is a choice about the artifact rather than a constraint of a dependency.
+# The module is HTTP clients and an in-memory record of the sessions handed out
+# — nothing in it needs cgo — so this is a choice about the artifact rather than
+# a constraint of a dependency.
 #
 # The builder is pinned to $BUILDPLATFORM, and that is not a detail. Left
 # unpinned, a multi-arch build pulls an image per target architecture and runs
@@ -40,22 +41,23 @@ RUN go build -trimpath \
 # ---------------------------------------------------------------------------
 # Runtime
 # ---------------------------------------------------------------------------
-# Distroless rather than Alpine: the service talks HTTP and writes one JSON
-# file. It runs no subprocess and needs no shell, so there is nothing for a base
-# with a package manager to provide, and a smaller base is a smaller thing to
-# keep patched.
+# Distroless rather than Alpine: the service speaks HTTP and keeps its state in
+# memory. It runs no subprocess and needs no shell or writable filesystem, so
+# there is nothing for a base with a package manager to provide, and a smaller
+# base is a smaller thing to keep patched.
 #
-# static-debian12:nonroot defines uid 65532, so the pod runs unprivileged
-# without the deployment having to arrange it. Nothing needs writing to disk: the
-# session state is in memory, deliberately, so the image runs read-only.
+# static-debian12:nonroot defines uid 65532, so the container runs unprivileged
+# without anything having to arrange it.
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /out/labs /usr/local/bin/labs
 
-# A bare `docker run` of the image starts somewhere sensible rather than failing
-# on an empty configuration. The compose file and a real deployment set the rest.
-ENV LABS_LISTEN=:8080 \
-    LABS_LOG_LEVEL=info
+# LABS_LOG_LEVEL is the only default worth baking in. LABS_LISTEN is deliberately
+# NOT set here: the service falls back to PORT when it is unset, and an image
+# that pinned LABS_LISTEN would override the PORT a platform injects — turning
+# the variable the platform probes into a no-op. A bare `docker run` still binds
+# :8080 through the fallback.
+ENV LABS_LOG_LEVEL=info
 
 USER nonroot:nonroot
 
@@ -63,4 +65,5 @@ EXPOSE 8080
 
 # Distroless has no shell, so the binary is the entrypoint directly. It installs
 # its own signal handling, which is what a shell wrapper would otherwise be for.
+# It takes no subcommand — flags and environment only — so no CMD is needed.
 ENTRYPOINT ["/usr/local/bin/labs"]

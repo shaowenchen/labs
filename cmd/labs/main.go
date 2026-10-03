@@ -65,41 +65,45 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 	}
 
 	log := logging.New(cfg.LogLevel, os.Stderr)
-	// The API package logs failures through the standard logger, so the
-	// configured one has to be the default as well as the one passed down — or
-	// a request failure would be logged at a level the deployment did not ask
-	// for, by a handler that never saw this logger.
 	slog.SetDefault(log)
 	log.Info("starting labs", "build", buildinfo.String())
 	if printConfig {
 		printResolved(cfg, log)
 	}
+	// The configuration problems are logged loudly and then served, rather than
+	// exiting. See config.Load for why: a process that exits on incomplete
+	// configuration cannot be told apart from one that crashed.
+	if len(cfg.Problems) > 0 {
+		log.Warn("this deployment is not configured yet and cannot offer labs; /readyz and /api/v1/config say what is missing",
+			"problems", len(cfg.Problems))
+		for _, p := range cfg.Problems {
+			log.Warn("configuration", "problem", p)
+		}
+	}
 
 	st := store.New()
 
-	// One driver per kind the deployment actually runs. Built here rather than
-	// inside the manager so a kind with no driver is a startup error rather than
-	// a request-time surprise.
+	// One driver per kind the deployment actually runs. A kind with no driver
+	// (sandboxlab, which is not implemented) is left out, and its environment
+	// simply never reports ready — the configuration already lists that as a
+	// problem, so this is not a second, silent failure.
 	drivers := map[model.Kind]driver.Driver{}
 	for _, env := range cfg.Envs {
 		if _, ok := drivers[env.Kind]; ok {
 			continue
 		}
-		switch env.Kind {
-		case model.KindApplab:
+		if env.Kind == model.KindApplab {
 			drivers[env.Kind] = applab.New(log)
-		case model.KindSandboxlab:
-			return fmt.Errorf("sandboxlab is not implemented yet; configure only applab environments")
 		}
 	}
 
 	manager := session.New(cfg, st, drivers, log)
 
-	// Keep the environments warm. When it is off, an environment is started on
-	// demand by this same client the first time a request needs one — which the
-	// service does not do yet, so with the keeper off an environment someone
-	// else started is used and none is started otherwise.
-	if cfg.KeepWarm {
+	// Keep the environments warm. Only started when the configuration can
+	// actually dispatch: a keeper with no token or no repositories would fail
+	// on every tick, which is noise that hides the configuration problem the
+	// operator needs to see.
+	if cfg.KeepWarm && cfg.Usable() {
 		targets := keeperTargets(cfg)
 		keeper := gha.NewKeeper(gha.KeeperConfig{
 			Client:   gha.New(cfg.GitHubAPI, cfg.GitHubToken),
@@ -110,7 +114,7 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 			Log:      log,
 		})
 		go keeper.Run(ctx)
-	} else {
+	} else if !cfg.KeepWarm {
 		log.Info("LABS_KEEPWARM is off; environments are not being kept warm")
 	}
 

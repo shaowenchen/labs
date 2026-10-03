@@ -93,9 +93,27 @@ type Config struct {
 
 	// Envs are the environments, each with its key resolved.
 	Envs []model.Env
+
+	// Problems are the configuration mistakes found while loading: a variable
+	// that could not be read, a required one that is missing, an environment
+	// that is not shaped right. They do not stop the service. It starts, serves
+	// /healthz, and reports them through its log, /readyz and /api/v1/config.
+	Problems []string
 }
 
-// Load reads the configuration from the environment and validates it.
+// Load reads the configuration from the environment.
+//
+// It returns an error only when the environment cannot be read at all — a
+// malformed duration or number in a variable this service owns. Anything else
+// that is wrong, including everything a working deployment needs and does not
+// have, comes back in Problems instead.
+//
+// The reason is the failure it prevents. A process that exits on incomplete
+// configuration is indistinguishable, from the outside, from one that crashed,
+// and on a platform that starts it per request it is a 500 on every request.
+// Starting anyway means /healthz answers, /readyz and /api/v1/config say exactly
+// what is missing, and whoever is deploying can see the problem rather than a
+// container that will not stay up.
 func Load() (Config, error) {
 	var cfg Config
 	var err error
@@ -111,6 +129,10 @@ func Load() (Config, error) {
 
 	cfg.Repos = splitList(os.Getenv("LABS_REPOS"))
 
+	// These four are the only unreadable values: the variable is set to
+	// something that is not a duration or a number. A typo in one of them is
+	// still a reason to stop, because continuing would silently substitute the
+	// default for the value the operator clearly meant to set.
 	if cfg.SessionTTL, err = durationEnv("LABS_SESSION_TTL", 2*time.Hour); err != nil {
 		return Config{}, err
 	}
@@ -143,14 +165,20 @@ func Load() (Config, error) {
 	}
 
 	if cfg.Envs, err = parseEnvs(os.Getenv("LABS_ENVIRONMENTS")); err != nil {
-		return Config{}, err
+		// Malformed JSON is a problem, not a reason to stop: the rest of the
+		// configuration may be perfectly usable, and the message says which
+		// variable to fix.
+		cfg.Envs = nil
+		cfg.Problems = append(cfg.Problems, err.Error())
 	}
 
-	if err := cfg.Validate(); err != nil {
-		return Config{}, err
-	}
+	cfg.Problems = append(cfg.Problems, cfg.Validate()...)
 	return cfg, nil
 }
+
+// Usable reports whether the configuration is complete enough to serve labs. It
+// is what /readyz answers, and what decides whether the keeper is started.
+func (c Config) Usable() bool { return len(c.Problems) == 0 }
 
 // resolveListen decides the address to bind.
 //
@@ -171,86 +199,106 @@ func resolveListen(labsListen string) string {
 	return ":8080"
 }
 
-// Validate rejects a configuration the service could not run under.
+// Validate lists what is wrong with the configuration.
 //
 // Every message names the variable at fault. A configuration error that only
 // says what is wrong, not where, costs the reader a search through the deploy
 // manifest for something the process already knew.
-func (c Config) Validate() error {
-	switch {
-	case c.Listen == "":
-		return fmt.Errorf("LABS_LISTEN is empty")
-	case c.SessionTTL <= 0:
-		return fmt.Errorf("LABS_SESSION_TTL must be positive, got %s", c.SessionTTL)
-	case c.GitHubToken == "":
-		return fmt.Errorf("LABS_GITHUB_TOKEN is required: the service dispatches workflows, which needs a token with Actions: write")
-	case len(c.Repos) == 0:
-		return fmt.Errorf("LABS_REPOS is required: a comma-separated list of owner/repo the service may dispatch in")
-	case len(c.Envs) == 0:
-		return fmt.Errorf("LABS_ENVIRONMENTS is required: a JSON array describing at least one environment")
-	}
+//
+// It returns every problem rather than the first, so one pass shows everything
+// that has to be set rather than one thing per restart.
+func (c Config) Validate() []string {
+	var problems []string
+	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
 
+	if c.Listen == "" {
+		add("LABS_LISTEN is empty")
+	}
+	if c.SessionTTL <= 0 {
+		add("LABS_SESSION_TTL must be positive, got %s", c.SessionTTL)
+	}
+	if c.GitHubToken == "" {
+		add("LABS_GITHUB_TOKEN is not set: the service dispatches workflows, which needs a token with Actions: write on the repositories in LABS_REPOS")
+	}
+	if len(c.Repos) == 0 {
+		add("LABS_REPOS is not set: a comma-separated list of owner/repo the service may dispatch in")
+	}
 	for _, r := range c.Repos {
 		if !strings.Contains(r, "/") {
-			return fmt.Errorf("LABS_REPOS entry %q is not owner/repo", r)
+			add("LABS_REPOS entry %q is not owner/repo", r)
 		}
 	}
-
 	if !validSessionHours(c.DispatchSessionHours) {
-		return fmt.Errorf("LABS_DISPATCH_SESSION_HOURS is %q, but the workflow declares it as a choice of 1, 2, 4 or unlimited", c.DispatchSessionHours)
+		add("LABS_DISPATCH_SESSION_HOURS is %q, but the workflow declares it as a choice of 1, 2, 4 or unlimited", c.DispatchSessionHours)
+	}
+	if len(c.Envs) == 0 && !hasProblemPrefix(problems, "LABS_ENVIRONMENTS") {
+		add("LABS_ENVIRONMENTS is not set: a JSON array describing at least one environment")
 	}
 
 	seen := make(map[string]bool, len(c.Envs))
 	for _, e := range c.Envs {
-		if err := c.validateEnv(e); err != nil {
-			return err
-		}
+		problems = append(problems, c.validateEnv(e)...)
 		if seen[e.ID] {
-			return fmt.Errorf("LABS_ENVIRONMENTS names %q twice", e.ID)
+			add("LABS_ENVIRONMENTS names %q twice", e.ID)
 		}
 		seen[e.ID] = true
 	}
-	return nil
+	return problems
 }
 
-func (c Config) validateEnv(e model.Env) error {
+// hasProblemPrefix reports whether a problem already mentions the variable, so
+// a malformed value is not also reported as a missing one.
+func hasProblemPrefix(problems []string, prefix string) bool {
+	for _, p := range problems {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c Config) validateEnv(e model.Env) []string {
+	var problems []string
+	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
+
 	switch {
 	case e.ID == "":
-		return fmt.Errorf("LABS_ENVIRONMENTS has an environment with no id")
+		add("LABS_ENVIRONMENTS has an environment with no id")
+		return problems
 	case !e.Kind.Known():
-		return fmt.Errorf("LABS_ENVIRONMENTS entry %q has kind %q, which is not applab or sandboxlab", e.ID, e.Kind)
+		add("LABS_ENVIRONMENTS entry %q has kind %q, which is not applab or sandboxlab", e.ID, e.Kind)
+		return problems
 	case e.Repo == "":
-		return fmt.Errorf("LABS_ENVIRONMENTS entry %q names no repo", e.ID)
+		add("LABS_ENVIRONMENTS entry %q names no repo", e.ID)
 	case !contains(c.Repos, e.Repo):
-		return fmt.Errorf("LABS_ENVIRONMENTS entry %q dispatches in %q, which is not in LABS_REPOS", e.ID, e.Repo)
+		add("LABS_ENVIRONMENTS entry %q dispatches in %q, which is not in LABS_REPOS", e.ID, e.Repo)
 	case e.Workflow == "":
-		return fmt.Errorf("LABS_ENVIRONMENTS entry %q names no workflow", e.ID)
+		add("LABS_ENVIRONMENTS entry %q names no workflow", e.ID)
 	case e.Ref == "":
-		return fmt.Errorf("LABS_ENVIRONMENTS entry %q names no ref", e.ID)
+		add("LABS_ENVIRONMENTS entry %q names no ref", e.ID)
 	case !validHost(e.Domain):
-		return fmt.Errorf("LABS_ENVIRONMENTS entry %q has domain %q, which is not a bare hostname", e.ID, e.Domain)
+		add("LABS_ENVIRONMENTS entry %q has domain %q, which must be a bare hostname with no scheme or path", e.ID, e.Domain)
 	case !validBasePath(e.BasePath):
-		return fmt.Errorf("LABS_ENVIRONMENTS entry %q has base_path %q, which must be empty or start with / and not end with one", e.ID, e.BasePath)
+		add("LABS_ENVIRONMENTS entry %q has base_path %q, which must be empty or start with / and not end with one", e.ID, e.BasePath)
 	case e.APIKey == "":
-		return fmt.Errorf("no key for environment %q: set LABS_KEY_%s to the key the environment is configured with", e.ID, keyEnvSuffix(e.ID))
+		add("environment %q has no key: set LABS_KEY_%s to the key that environment is configured with", e.ID, keyEnvSuffix(e.ID))
 	case e.Capacity <= 0:
-		return fmt.Errorf("LABS_ENVIRONMENTS entry %q has capacity %d, which must be positive", e.ID, e.Capacity)
+		add("LABS_ENVIRONMENTS entry %q has capacity %d, which must be positive", e.ID, e.Capacity)
 	}
 
 	switch e.Kind {
 	case model.KindApplab:
 		if len(e.Slots) == 0 {
-			return fmt.Errorf("LABS_ENVIRONMENTS entry %q is an applab environment with no slots: it needs one app id per concurrent session", e.ID)
-		}
-		if e.Capacity != len(e.Slots) {
-			return fmt.Errorf("LABS_ENVIRONMENTS entry %q has capacity %d but %d slots; for applab they are the same number", e.ID, e.Capacity, len(e.Slots))
+			add("LABS_ENVIRONMENTS entry %q is an applab environment with no slots: it needs one app id per concurrent session", e.ID)
+		} else if e.Capacity != len(e.Slots) {
+			add("LABS_ENVIRONMENTS entry %q has capacity %d but %d slots; for applab they are the same number", e.ID, e.Capacity, len(e.Slots))
 		}
 	case model.KindSandboxlab:
 		if e.Template == "" {
-			return fmt.Errorf("LABS_ENVIRONMENTS entry %q is a sandboxlab environment with no template", e.ID)
+			add("LABS_ENVIRONMENTS entry %q is a sandboxlab environment with no template", e.ID)
 		}
 	}
-	return nil
+	return problems
 }
 
 // TotalCapacity is how many concurrent sessions the environments can serve.

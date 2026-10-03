@@ -162,13 +162,20 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
 
-// ready answers 200 when at least one environment is up, and 503 otherwise. The
-// body lists every environment so an operator can see which is missing without
-// reading the logs.
+// ready answers 200 when at least one environment is up and the configuration
+// is complete, and 503 otherwise. The body lists every environment and any
+// configuration problem, so an operator can see what is missing without reading
+// the logs.
 func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	envs := s.svc.Status(r.Context())
-	body := map[string]any{"environments": envStatusJSON(envs)}
-	if s.svc.ReadyAny(r.Context()) {
+	body := map[string]any{
+		"environments": envStatusJSON(envs),
+		"configured":   s.cfg.Usable(),
+	}
+	if len(s.cfg.Problems) > 0 {
+		body["problems"] = s.cfg.Problems
+	}
+	if s.cfg.Usable() && s.svc.ReadyAny(r.Context()) {
 		writeJSON(w, http.StatusOK, merge(body, map[string]any{"status": "ok"}))
 		return
 	}
