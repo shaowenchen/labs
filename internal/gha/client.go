@@ -176,40 +176,16 @@ func (c *Client) RunLogs(ctx context.Context, repo string, runID int64) (string,
 	return string(raw), nil
 }
 
-// DispatchAndFind dispatches a run and returns it once GitHub has created it.
+// CancelRun asks GitHub to cancel a run.
 //
-// The wait is bounded and short: a dispatched run appears within a few seconds
-// when it appears at all, and the caller ticks again in a minute if it does not.
-// Returning "not found" rather than blocking is what keeps a stuck GitHub from
-// holding the keep-warm loop hostage.
-func (c *Client) DispatchAndFind(ctx context.Context, repo, workflow, ref string, inputs map[string]string, within time.Duration) (Run, error) {
-	dispatchedAt := c.now()
-	if err := c.Dispatch(ctx, repo, workflow, ref, inputs); err != nil {
-		return Run{}, err
-	}
-
-	deadline := dispatchedAt.Add(within)
-	for {
-		runs, err := c.Runs(ctx, repo, workflow, ref, 10)
-		if err != nil {
-			return Run{}, err
-		}
-		for _, r := range runs {
-			// A run created at or after the dispatch, allowing a second of slack
-			// for clock skew between this host and GitHub.
-			if !r.CreatedAt.Before(dispatchedAt.Add(-time.Second)) {
-				return r, nil
-			}
-		}
-		if c.now().After(deadline) {
-			return Run{}, fmt.Errorf("dispatched %s/%s but no run appeared within %s", repo, workflow, within)
-		}
-		select {
-		case <-ctx.Done():
-			return Run{}, ctx.Err()
-		case <-time.After(3 * time.Second):
-		}
-	}
+// It is used for a run that looks stuck: one that has been going far longer than
+// the boot takes and has still not announced an address. Cancelling it and
+// dispatching a fresh one is the recovery, and it is deliberately not something
+// done on every tick — cancelling a run that is only slow would restart the boot
+// it is in the middle of, forever.
+func (c *Client) CancelRun(ctx context.Context, repo string, runID int64) error {
+	path := fmt.Sprintf("/repos/%s/actions/runs/%d/cancel", repo, runID)
+	return c.do(ctx, http.MethodPost, path, nil, nil)
 }
 
 // do performs one request, decoding a JSON body into out when out is non-nil.

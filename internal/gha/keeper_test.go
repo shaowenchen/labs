@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +20,7 @@ type fakeGitHub struct {
 	mu         sync.Mutex
 	runs       []Run
 	dispatches []map[string]any
+	cancels    []int64
 }
 
 func (f *fakeGitHub) setRuns(runs ...Run) {
@@ -31,6 +33,30 @@ func (f *fakeGitHub) dispatchCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.dispatches)
+}
+
+// order is the sequence of mutating calls, so a test can assert that a cancel
+// happened before a dispatch.
+func (f *fakeGitHub) order() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.cancels)+len(f.dispatches))
+	for _, id := range f.cancels {
+		out = append(out, "cancel:"+strconv.FormatInt(id, 10))
+	}
+	for range f.dispatches {
+		out = append(out, "dispatch")
+	}
+	return out
+}
+
+func contains(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *fakeGitHub) lastDispatch() map[string]any {
@@ -64,6 +90,13 @@ func (f *fakeGitHub) server() *httptest.Server {
 		runs := append([]Run(nil), f.runs...)
 		f.mu.Unlock()
 		_ = json.NewEncoder(w).Encode(map[string]any{"workflow_runs": runs})
+	})
+	mux.HandleFunc("POST /repos/{owner}/{repo}/actions/runs/{id}/cancel", func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		f.mu.Lock()
+		f.cancels = append(f.cancels, id)
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusAccepted)
 	})
 	return httptest.NewServer(mux)
 }
@@ -294,5 +327,45 @@ func TestDispatchHonoursAnExplicitRef(t *testing.T) {
 	}
 	if got := f.lastDispatch()["ref"]; got != "release" {
 		t.Errorf("dispatched ref = %v, want release", got)
+	}
+}
+
+// A request that finds a run stuck — far past a boot without coming up —
+// cancels it and starts a fresh one. This is the "there is already one, drop it
+// and start over" recovery.
+func TestEnsureRunningCancelsAStuckRun(t *testing.T) {
+	now := time.Now()
+	f := &fakeGitHub{}
+	// Started 30 minutes ago and still in_progress: well past bootCeiling (20m).
+	f.setRuns(Run{ID: 7, Status: "in_progress", StartedAt: now.Add(-30 * time.Minute)})
+	k := testKeeper(t, f, now)
+
+	if !k.EnsureRunning(context.Background(), k.targets[0]) {
+		t.Fatal("EnsureRunning = false; want it to recover")
+	}
+	if !contains(f.order(), "cancel:7") {
+		t.Fatalf("expected run 7 to be cancelled, got %v", f.order())
+	}
+	if n := f.dispatchCount(); n != 1 {
+		t.Fatalf("expected a fresh dispatch after cancelling, got %d", n)
+	}
+}
+
+// A run still within the boot window is left alone: cancelling it would restart
+// the boot it is in the middle of, every tick, forever.
+func TestEnsureRunningLeavesASlowlyBootingRunAlone(t *testing.T) {
+	now := time.Now()
+	f := &fakeGitHub{}
+	f.setRuns(Run{ID: 7, Status: "in_progress", StartedAt: now.Add(-5 * time.Minute)})
+	k := testKeeper(t, f, now)
+
+	if !k.EnsureRunning(context.Background(), k.targets[0]) {
+		t.Fatal("EnsureRunning = false with a booting run; want true")
+	}
+	if contains(f.order(), "cancel:7") {
+		t.Fatalf("a booting run should not be cancelled: %v", f.order())
+	}
+	if n := f.dispatchCount(); n != 0 {
+		t.Fatalf("dispatched %d times over a booting run, want 0", n)
 	}
 }
