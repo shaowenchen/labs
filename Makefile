@@ -7,13 +7,15 @@ MODULE  := github.com/shaowenchen/labs
 BIN     := bin
 IMAGE   ?= docker.io/shaowenchen/labs
 TAG     ?= dev
-# The version and commit are stamped into the binary so a running service can
-# say what it is, which is the first question anyone asks of one.
-VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+# The version, commit and build time are stamped into the binary so a running
+# service can say what it is, which is the first question anyone asks of one.
+VERSION   ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT    ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILDTIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w \
   -X $(MODULE)/internal/buildinfo.Version=$(VERSION) \
-  -X $(MODULE)/internal/buildinfo.Commit=$(COMMIT)
+  -X $(MODULE)/internal/buildinfo.Commit=$(COMMIT) \
+  -X $(MODULE)/internal/buildinfo.BuildTime=$(BUILDTIME)
 
 GO ?= go
 # -mod=mod so a target works from a clean checkout; CI sets its own GOFLAGS.
@@ -81,6 +83,7 @@ docker-build:
 	docker build \
 	  --build-arg VERSION=$(VERSION) \
 	  --build-arg COMMIT=$(COMMIT) \
+	  --build-arg BUILD_TIME=$(BUILDTIME) \
 	  -t $(IMAGE):$(TAG) .
 
 .PHONY: docker-push

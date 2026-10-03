@@ -21,6 +21,7 @@ ARG TARGETARCH
 
 ARG VERSION=dev
 ARG COMMIT=unknown
+ARG BUILD_TIME=unknown
 
 WORKDIR /src
 
@@ -35,7 +36,8 @@ ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 RUN go build -trimpath \
       -ldflags "-s -w \
         -X github.com/shaowenchen/labs/internal/buildinfo.Version=${VERSION} \
-        -X github.com/shaowenchen/labs/internal/buildinfo.Commit=${COMMIT}" \
+        -X github.com/shaowenchen/labs/internal/buildinfo.Commit=${COMMIT} \
+        -X github.com/shaowenchen/labs/internal/buildinfo.BuildTime=${BUILD_TIME}" \
       -o /out/labs ./cmd/labs
 
 # ---------------------------------------------------------------------------

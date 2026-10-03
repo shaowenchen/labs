@@ -11,6 +11,11 @@ var Version = "dev"
 // Commit is the git revision the binary was built from, or "unknown".
 var Commit = "unknown"
 
+// BuildTime is when the binary was built, as an RFC3339 UTC timestamp, or
+// "unknown". It is when the build happened, not when the process started, so a
+// page that shows it is answering "how current is this deployment".
+var BuildTime = "unknown"
+
 // String renders the version and commit as one line, for logs and /api/v1/config.
 //
 // The two are usually the same string on a build with no tag, because

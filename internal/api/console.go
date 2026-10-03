@@ -49,6 +49,7 @@ const consoleHTML = `<!doctype html>
   .banner h2 { font-size: .95rem; margin: 0 0 .5rem; }
   .banner ul { margin: 0; padding-left: 1.2rem; }
   .banner li { margin: .2rem 0; }
+  footer { margin-top: 3rem; padding-top: .75rem; border-top: 1px solid var(--line); color: var(--muted); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
 </style>
 </head>
 <body>
@@ -58,11 +59,13 @@ const consoleHTML = `<!doctype html>
   <button id="go">Get a lab</button>
   <div id="out"></div>
   <div id="status"></div>
+  <footer id="build"></footer>
 </main>
 <script>
 const out = document.getElementById('out');
 const status = document.getElementById('status');
 const go = document.getElementById('go');
+const build = document.getElementById('build');
 function row(k, v, cls) {
   const d = document.createElement('div'); d.className = 'row' + (cls ? ' ' + cls : '');
   const kk = document.createElement('div'); kk.className = 'k'; kk.textContent = k;
@@ -85,11 +88,21 @@ function problems(list) {
   box.append(hint);
   return box;
 }
+// The build footer is filled from much earlier, when the page's own template is
+// rendered, so the commit and build time are in the served document rather than
+// fetched after it.
+function setFooter(b) {
+  const parts = [];
+  if (b.commit) parts.push('commit ' + b.commit);
+  if (b.build_time && b.build_time !== 'unknown') parts.push(new Date(b.build_time).toLocaleString());
+  build.textContent = parts.join(' · ');
+}
 async function loadStatus() {
   try {
     const res = await fetch('api/v1/config');
     const body = await res.json();
     const cfg = body.data || {};
+    setFooter(cfg);
     if (!cfg.configured && (cfg.problems || []).length) {
       status.replaceChildren(problems(cfg.problems));
       go.disabled = true;

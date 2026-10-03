@@ -25,6 +25,8 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	respond(w, http.StatusOK, map[string]any{
 		"api_version": APIVersion,
 		"version":     buildinfo.String(),
+		"commit":      buildinfo.Commit,
+		"build_time":  buildinfo.BuildTime,
 		"session_ttl": s.cfg.SessionTTL.String(),
 		"kinds":       list,
 		"configured":  s.cfg.Usable(),
