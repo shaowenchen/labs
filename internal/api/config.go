@@ -40,3 +40,21 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		"environments": envStatusJSON(s.svc.Status(r.Context())),
 	})
 }
+
+// ensure starts a cluster of each kind that is not up, and reports what it
+// found. The landing page calls it on load, so a cluster is coming before
+// anyone asks for a lab — which is what lets the page show "starting" and only
+// offer a lab once one is ready.
+//
+// It is safe to call repeatedly: an environment that is up is skipped, and a
+// start does nothing when a run is already running or queued.
+func (s *Server) ensure(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Usable() {
+		s.svc.EnsureStarted(r.Context())
+	}
+	respond(w, http.StatusOK, map[string]any{
+		"environments": envStatusJSON(s.svc.Status(r.Context())),
+		"configured":   s.cfg.Usable(),
+		"problems":     s.cfg.Problems,
+	})
+}

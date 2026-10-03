@@ -276,6 +276,27 @@ func (m *Manager) startOne(ctx context.Context, kind model.Kind) bool {
 	return false
 }
 
+// EnsureStarted starts a cluster of each kind that is not up.
+//
+// It is what the landing page calls when it loads: a visit is a good reason to
+// have a cluster coming, and on a host with no keeper it is the only thing that
+// will start one before someone asks for a lab. It is idempotent — an
+// environment that is up is skipped, and the start itself does nothing when a
+// run is already running or queued.
+func (m *Manager) EnsureStarted(ctx context.Context) {
+	if m.start == nil {
+		return
+	}
+	for _, env := range m.cfg.Envs {
+		if drv := m.drivers[env.Kind]; drv != nil {
+			if m.envReady(ctx, drv, env).Ready {
+				continue
+			}
+		}
+		m.start(ctx, env)
+	}
+}
+
 // Get returns a recorded session.
 func (m *Manager) Get(id string) (model.Session, bool) {
 	return m.store.Get(id)

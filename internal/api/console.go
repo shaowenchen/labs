@@ -67,7 +67,7 @@ const consoleHTML = `<!doctype html>
 <main>
   <h1>labs</h1>
   <p class="lead">Get a working environment for a couple of hours. No account.</p>
-  <button id="go">Get a lab</button>
+  <button id="go" hidden>Get a lab</button>
   <div id="out"></div>
   <div id="status"></div>
   <h2 id="envs-title" hidden>Cluster status</h2>
@@ -133,21 +133,22 @@ function setFooter(b) {
   if (b.build_time && b.build_time !== 'unknown') parts.push(new Date(b.build_time).toLocaleString());
   build.textContent = parts.join(' · ');
 }
-let configured = true;
 async function loadStatus() {
   try {
-    const res = await fetch('api/v1/config');
-    const body = await res.json();
-    const cfg = body.data || {};
+    const res = await fetch('api/v1/ensure', { method: 'POST' });
+    const d = (await res.json()).data || {};
+    configured = d.configured !== false;
+    renderEnvs(d.environments);
+    // The lab button is offered only when there is a cluster to serve it;
+    // before that the status area already says a cluster is starting.
+    go.hidden = !(configured && (d.environments || []).some(e => e.ready));
+
+    const cfg = (await (await fetch('api/v1/config')).json()).data || {};
     setFooter(cfg);
-    renderEnvs(cfg.environments);
-    configured = cfg.configured !== false;
     if (!configured && (cfg.problems || []).length) {
       status.replaceChildren(problems(cfg.problems));
-      go.disabled = true;
     } else {
       status.replaceChildren();
-      go.disabled = false;
     }
   } catch (e) { /* the button still works and will report a real error */ }
 }

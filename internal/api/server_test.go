@@ -26,6 +26,7 @@ type fakeSvc struct {
 	released  []string
 	readyAny  bool
 	status    []session.EnvStatus
+	ensured   int
 }
 
 func (f *fakeSvc) Provision(_ context.Context, kind model.Kind, ip string) (session.Result, error) {
@@ -344,5 +345,46 @@ func TestReadyzReportsUnconfigured(t *testing.T) {
 	w := do(t, s, "GET", "/readyz", "")
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("readyz on an unconfigured deployment = %d, want 503 even with an environment up", w.Code)
+	}
+}
+
+func (f *fakeSvc) EnsureStarted(context.Context) { f.ensured++ }
+
+// The page calls /ensure on load so a cluster is coming before anyone asks for
+// a lab, and only offers the button once one is ready.
+func TestEnsureStartsAndReportsTheEnvironments(t *testing.T) {
+	svc := &fakeSvc{status: []session.EnvStatus{{ID: "APPLAB", Kind: model.KindApplab, Ready: false, Capacity: 8}}}
+	s := newTestServer(t, svc, testConfig(), 5)
+
+	w := do(t, s, "POST", "/api/v1/ensure", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", w.Code)
+	}
+	if svc.ensured != 1 {
+		t.Errorf("EnsureStarted was called %d times, want 1", svc.ensured)
+	}
+	got := data[map[string]any](t, w)
+	if got["configured"] != true {
+		t.Errorf("configured = %v, want true", got["configured"])
+	}
+	envs, _ := got["environments"].([]any)
+	if len(envs) != 1 {
+		t.Fatalf("environments = %v, want one", got["environments"])
+	}
+}
+
+// An unconfigured deployment must not be started, and must say why.
+func TestEnsureDoesNothingWhenUnconfigured(t *testing.T) {
+	cfg := testConfig()
+	cfg.Problems = []string{"LABS_GITHUB_TOKEN is not set"}
+	svc := &fakeSvc{}
+	s := newTestServer(t, svc, cfg, 5)
+
+	got := data[map[string]any](t, do(t, s, "POST", "/api/v1/ensure", ""))
+	if svc.ensured != 0 {
+		t.Errorf("EnsureStarted was called on an unconfigured deployment")
+	}
+	if got["configured"] != false {
+		t.Errorf("configured = %v, want false", got["configured"])
 	}
 }
