@@ -45,6 +45,10 @@ const consoleHTML = `<!doctype html>
   code { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; }
   .warn { color: #b7791f; }
   .err { color: #c53030; }
+  .banner { margin-top: 1.5rem; padding: .75rem 1rem; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--warn) 8%, transparent); }
+  .banner h2 { font-size: .95rem; margin: 0 0 .5rem; }
+  .banner ul { margin: 0; padding-left: 1.2rem; }
+  .banner li { margin: .2rem 0; }
 </style>
 </head>
 <body>
@@ -53,15 +57,44 @@ const consoleHTML = `<!doctype html>
   <p class="lead">Get a working environment for a couple of hours. No account.</p>
   <button id="go">Get a lab</button>
   <div id="out"></div>
+  <div id="status"></div>
 </main>
 <script>
 const out = document.getElementById('out');
+const status = document.getElementById('status');
 const go = document.getElementById('go');
 function row(k, v, cls) {
   const d = document.createElement('div'); d.className = 'row' + (cls ? ' ' + cls : '');
   const kk = document.createElement('div'); kk.className = 'k'; kk.textContent = k;
   const vv = document.createElement('div'); vv.innerHTML = v;
   d.append(kk, vv); return d;
+}
+// problems renders a list of what is wrong with the deployment. It is shown on
+// load and on a failed request, so the message that says "not configured" is
+// followed by the actual missing variables rather than pointing elsewhere.
+function problems(list) {
+  const box = document.createElement('div'); box.className = 'banner';
+  const h = document.createElement('h2'); h.textContent = 'This deployment is not configured yet'; box.append(h);
+  const ul = document.createElement('ul');
+  (list || []).forEach(p => { const li = document.createElement('li'); li.textContent = p; ul.append(li); });
+  box.append(ul);
+  const hint = document.createElement('p'); hint.className = 'lead'; hint.style.margin = '.75rem 0 0';
+  hint.textContent = 'Set these and redeploy. ';
+  const a = document.createElement('a'); a.href = 'api/v1/config'; a.textContent = 'GET /api/v1/config';
+  hint.append(a, document.createTextNode(' shows the full state.'));
+  box.append(hint);
+  return box;
+}
+async function loadStatus() {
+  try {
+    const res = await fetch('api/v1/config');
+    const body = await res.json();
+    const cfg = body.data || {};
+    if (!cfg.configured && (cfg.problems || []).length) {
+      status.replaceChildren(problems(cfg.problems));
+      go.disabled = true;
+    }
+  } catch (e) { /* the button still works and will report a real error */ }
 }
 go.onclick = async () => {
   go.disabled = true; out.replaceChildren();
@@ -71,7 +104,9 @@ go.onclick = async () => {
     if (!res.ok) {
       const d = row('error', document.createTextNode(body.error || res.statusText).textContent, 'err');
       if (body.retryable) d.append(Object.assign(document.createElement('span'), { textContent: ' (retryable)' }));
-      out.append(d); return;
+      out.append(d);
+      if ((body.problems || []).length) out.append(problems(body.problems));
+      return;
     }
     const d = body.data;
     out.append(row('console', '<a href="' + d.console_url + '" target="_blank" rel="noopener">' + d.console_url + '</a>'));
@@ -86,6 +121,7 @@ go.onclick = async () => {
     go.disabled = false;
   }
 };
+loadStatus();
 </script>
 </body>
 </html>

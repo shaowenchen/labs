@@ -22,6 +22,12 @@ type successBody struct {
 type errorBody struct {
 	Error     string `json:"error"`
 	Retryable bool   `json:"retryable"`
+
+	// Problems carries the detail behind a message that only summarises. It is
+	// set when the failure is a configuration the reader has to go and fix, so
+	// the answer to "what is missing" is in the response rather than behind a
+	// second request to another endpoint.
+	Problems []string `json:"problems,omitempty"`
 }
 
 // apiError is a failure with a status, whether retrying could help, and an
@@ -31,7 +37,12 @@ type apiError struct {
 	Message    string
 	CanRetry   bool
 	RetryAfter int // seconds; 0 means no header
-	cause      error
+
+	// Problems is detail a caller can act on, when the message is only a
+	// summary. See errorBody.Problems.
+	Problems []string
+
+	cause error
 }
 
 func (e *apiError) Error() string {
@@ -64,6 +75,9 @@ func (e *apiError) Retryable() *apiError { e.CanRetry = true; return e }
 
 // WithRetryAfter sets the Retry-After header, in seconds.
 func (e *apiError) WithRetryAfter(seconds int) *apiError { e.RetryAfter = seconds; return e }
+
+// WithProblems attaches actionable detail to the error body.
+func (e *apiError) WithProblems(problems []string) *apiError { e.Problems = problems; return e }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -103,7 +117,7 @@ func fail(w http.ResponseWriter, r *http.Request, err error) {
 			"method", r.Method, "path", r.URL.Path, "status", apiErr.Status, "error", apiErr.Error())
 	}
 
-	writeJSON(w, apiErr.Status, errorBody{Error: apiErr.Message, Retryable: apiErr.CanRetry})
+	writeJSON(w, apiErr.Status, errorBody{Error: apiErr.Message, Retryable: apiErr.CanRetry, Problems: apiErr.Problems})
 }
 
 // decodeJSON reads a JSON request body, refusing an oversized one.

@@ -46,7 +46,9 @@ func (s *Server) createLab(w http.ResponseWriter, r *http.Request) {
 	// and set variables, not to wait.
 	if !s.cfg.Usable() {
 		fail(w, r, Errorf(http.StatusServiceUnavailable,
-			"this deployment is not configured yet; GET /api/v1/config lists what is missing").Retryable())
+			"this deployment is not configured yet").
+			Retryable().
+			WithProblems(s.cfg.Problems))
 		return
 	}
 

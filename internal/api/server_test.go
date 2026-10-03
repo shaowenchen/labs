@@ -296,3 +296,51 @@ func TestWrongMethodIsRefused(t *testing.T) {
 		t.Fatalf("status = %d, want 405", w.Code)
 	}
 }
+
+// A deployment with an incomplete configuration must not answer a create with a
+// bare "no environment is available" — it must say what to set, in the response.
+func TestCreateLabWhenUnconfiguredReturnsTheProblems(t *testing.T) {
+	cfg := testConfig()
+	cfg.Problems = []string{"LABS_GITHUB_TOKEN is not set", "LABS_REPOS is not set"}
+	s := newTestServer(t, &fakeSvc{}, cfg, 5)
+
+	w := do(t, s, "POST", "/api/v1/labs", "{}")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", w.Code)
+	}
+	var body errorBody
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Problems) != 2 {
+		t.Fatalf("problems = %v, want the two configuration problems", body.Problems)
+	}
+}
+
+// /api/v1/config reports whether the deployment is configured, so a client can
+// tell "not set up yet" from "set up but nothing is running".
+func TestConfigReportsConfiguredState(t *testing.T) {
+	cfg := testConfig()
+	cfg.Problems = []string{"LABS_GITHUB_TOKEN is not set"}
+	s := newTestServer(t, &fakeSvc{}, cfg, 5)
+
+	got := data[map[string]any](t, do(t, s, "GET", "/api/v1/config", ""))
+	if got["configured"] != false {
+		t.Errorf("configured = %v, want false", got["configured"])
+	}
+	if probs, _ := got["problems"].([]any); len(probs) != 1 {
+		t.Errorf("problems = %v, want one", got["problems"])
+	}
+}
+
+// readyz carries the same verdict, so a probe sees it too.
+func TestReadyzReportsUnconfigured(t *testing.T) {
+	cfg := testConfig()
+	cfg.Problems = []string{"LABS_GITHUB_TOKEN is not set"}
+	s := newTestServer(t, &fakeSvc{readyAny: true}, cfg, 5)
+
+	w := do(t, s, "GET", "/readyz", "")
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("readyz on an unconfigured deployment = %d, want 503 even with an environment up", w.Code)
+	}
+}
