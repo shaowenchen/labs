@@ -276,16 +276,17 @@ func TestMissingKeyIsGeneratedNotAProblem(t *testing.T) {
 	}
 }
 
-// No domain is not a problem: the address is read from the environment's own
-// run log. That is what lets a deployment be a token and a repository list.
-func TestMissingDomainIsNotAProblem(t *testing.T) {
+// With no domain configured, each kind falls back to the hostname its own
+// workflow declares as a choice. That is what lets a deployment be a token and a
+// repository list.
+func TestDomainFallsBackToTheProjectsDefault(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_DOMAIN_SUFFIX": ""})
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
 		t.Fatalf("a configuration without a domain should be usable, problems: %v", cfg.Problems)
 	}
-	if cfg.Envs[0].Domain != "" {
-		t.Errorf("domain = %q, want empty so it is discovered", cfg.Envs[0].Domain)
+	if cfg.Envs[0].Domain != "applab-2.chenshaowen.com" {
+		t.Errorf("domain = %q, want the applab default", cfg.Envs[0].Domain)
 	}
 }
 
@@ -434,15 +435,26 @@ func TestSandboxlabDispatchCarriesNoAPIKey(t *testing.T) {
 	}
 }
 
-// An applab environment with no domain is fine: the address is discovered, so
-// no domain input is sent.
-func TestNoDomainMeansNoDomainInput(t *testing.T) {
+// The default domain is sent in the dispatch, because the workflow's domain
+// input is a choice and the default is one it accepts.
+func TestDefaultDomainIsSentInTheDispatch(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_DOMAIN_SUFFIX": ""})
 	inputs := mustLoad(t).Envs[0].DispatchInputs("4")
-	if _, ok := inputs["domain"]; ok {
-		t.Errorf("a discovered-address environment should not send a domain: %v", inputs)
+	if inputs["domain"] != "applab-2.chenshaowen.com" {
+		t.Errorf("domain = %v, want the applab default", inputs["domain"])
 	}
 	if inputs["session_hours"] != "4" || inputs["tunnel"] != "cloudflare" {
 		t.Errorf("inputs = %v", inputs)
+	}
+}
+
+// A domain configured to empty is sent as no domain input, for a workflow that
+// would take a default of its own.
+func TestEmptyDomainSendsNoDomainInput(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_DOMAIN_SUFFIX": ""})
+	e := mustLoad(t).Envs[0]
+	e.Domain = "" // as a deployment with a blank override would have it
+	if _, ok := e.DispatchInputs("4")["domain"]; ok {
+		t.Errorf("an empty domain should not be sent: %v", e.DispatchInputs("4"))
 	}
 }

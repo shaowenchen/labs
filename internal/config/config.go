@@ -351,6 +351,16 @@ func basePathFor(kind model.Kind) string {
 // own; it is the repository name under a shared suffix
 // (applab.<LABS_DOMAIN_SUFFIX>), or LABS_DOMAIN_<ID> for one that does not fit
 // that shape.
+// defaultDomains are the hostnames an environment falls back to when none is
+// configured. Each is a value the project's own debugger workflow declares as a
+// choice — so it is always one the dispatch will accept — and a named tunnel is
+// expected to serve it. They are defaults, not the shape of a deployment: a
+// different tunnel is pointed at with LABS_DOMAIN_<ID> or LABS_DOMAIN_SUFFIX.
+var defaultDomains = map[model.Kind]string{
+	model.KindApplab:     "applab-2.chenshaowen.com",
+	model.KindSandboxlab: "sandboxlab-2.chenshaowen.com",
+}
+
 func buildEnvs(repos []string, slots int, domainSuffix, ref string) []model.Env {
 	envs := make([]model.Env, 0, len(repos))
 	for _, repo := range repos {
@@ -358,9 +368,14 @@ func buildEnvs(repos []string, slots int, domainSuffix, ref string) []model.Env 
 		name := repoName(repo)
 		id := envID(name)
 
+		// The address, in order: a per-environment override, then a shared
+		// suffix (repository name under it), then the project's own default.
 		domain := strings.TrimSpace(os.Getenv("LABS_DOMAIN_" + id))
 		if domain == "" && domainSuffix != "" {
 			domain = strings.ToLower(name) + "." + domainSuffix
+		}
+		if domain == "" {
+			domain = defaultDomains[kind]
 		}
 
 		env := model.Env{
