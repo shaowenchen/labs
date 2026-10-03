@@ -351,9 +351,10 @@ func TestReadyzReportsUnconfigured(t *testing.T) {
 func (f *fakeSvc) EnsureStarted(context.Context) { f.ensured++ }
 
 // The page calls /ensure on load so a cluster is coming before anyone asks for
-// a lab, and only offers the button once one is ready.
-func TestEnsureStartsAndReportsTheEnvironments(t *testing.T) {
-	svc := &fakeSvc{status: []session.EnvStatus{{ID: "APPLAB", Kind: model.KindApplab, Ready: false, Capacity: 8}}}
+// a lab. It starts what is not up and returns immediately; the environment
+// status comes from /api/v1/config.
+func TestEnsureStartsAndReportsConfigured(t *testing.T) {
+	svc := &fakeSvc{}
 	s := newTestServer(t, svc, testConfig(), 5)
 
 	w := do(t, s, "POST", "/api/v1/ensure", "")
@@ -367,9 +368,8 @@ func TestEnsureStartsAndReportsTheEnvironments(t *testing.T) {
 	if got["configured"] != true {
 		t.Errorf("configured = %v, want true", got["configured"])
 	}
-	envs, _ := got["environments"].([]any)
-	if len(envs) != 1 {
-		t.Fatalf("environments = %v, want one", got["environments"])
+	if _, ok := got["environments"]; ok {
+		t.Error("ensure should not carry environment status; /api/v1/config does")
 	}
 }
 

@@ -54,8 +54,7 @@ func (f *fakeGitHub) server() *httptest.Server {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.mu.Lock()
 		f.dispatches = append(f.dispatches, body)
-		// A real dispatch creates a run; mimic that, so a caller that waits for
-		// one to appear (DispatchAndFind) sees it.
+		// A real dispatch creates a run; mimic that, so the next listing shows it.
 		f.runs = append(f.runs, Run{ID: int64(len(f.dispatches)), Status: "queued", CreatedAt: time.Now()})
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
@@ -83,7 +82,6 @@ func testKeeper(t *testing.T, f *fakeGitHub, now time.Time) *Keeper {
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	k.now = func() time.Time { return now }
-	k.findTimeout = 2 * time.Second
 	return k
 }
 

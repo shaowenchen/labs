@@ -66,7 +66,7 @@ const consoleHTML = `<!doctype html>
 <body>
 <main>
   <h1>labs</h1>
-  <p class="lead">Get a working environment for a couple of hours. No account.</p>
+  <p class="lead">Get a working environment for a couple of hours.</p>
   <button id="go" hidden>Get a lab</button>
   <div id="out"></div>
   <div id="status"></div>
@@ -133,32 +133,51 @@ function setFooter(b) {
   if (b.build_time && b.build_time !== 'unknown') parts.push(new Date(b.build_time).toLocaleString());
   build.textContent = parts.join(' · ');
 }
+let configured = true;
+// fetchJSON fetches with a deadline, so a slow or hung endpoint cannot leave
+// the page blank — it fails, and the caller shows why.
+async function fetchJSON(url, opts) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 15000);
+  try {
+    const res = await fetch(url, Object.assign({ signal: ctrl.signal }, opts || {}));
+    const body = await res.json();
+    return { ok: res.ok, status: res.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function loadStatus() {
   try {
-    const res = await fetch('api/v1/ensure', { method: 'POST' });
-    const d = (await res.json()).data || {};
-    configured = d.configured !== false;
-    renderEnvs(d.environments);
+    // /ensure starts a cluster if none is up; /config carries the state. Both
+    // are cheap — the readiness probe lives behind /config alone.
+    await fetchJSON('api/v1/ensure', { method: 'POST' });
+    const { body } = await fetchJSON('api/v1/config');
+    const cfg = body.data || {};
+    setFooter(cfg);
+    renderEnvs(cfg.environments);
+    configured = cfg.configured !== false;
     // The lab button is offered only when there is a cluster to serve it;
     // before that the status area already says a cluster is starting.
-    go.hidden = !(configured && (d.environments || []).some(e => e.ready));
-
-    const cfg = (await (await fetch('api/v1/config')).json()).data || {};
-    setFooter(cfg);
+    go.hidden = !(configured && (cfg.environments || []).some(e => e.ready));
     if (!configured && (cfg.problems || []).length) {
       status.replaceChildren(problems(cfg.problems));
     } else {
       status.replaceChildren();
     }
-  } catch (e) { /* the button still works and will report a real error */ }
+  } catch (e) {
+    // Say so rather than showing nothing, which is what a silent failure looks
+    // like: the cluster status simply never appears.
+    status.replaceChildren(row('status', 'could not reach the service: ' + e.message, 'err'));
+    go.hidden = true;
+  }
 }
 go.onclick = async () => {
   go.disabled = true; out.replaceChildren();
   try {
-    const res = await fetch('api/v1/labs', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
-    const body = await res.json();
-    if (!res.ok) {
-      const d = row('error', document.createTextNode(body.error || res.statusText).textContent, 'err');
+    const { ok, status: code, body } = await fetchJSON('api/v1/labs', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    if (!ok) {
+      const d = row('error', document.createTextNode(body.error || ('HTTP ' + code)).textContent, 'err');
       if (body.retryable) d.append(Object.assign(document.createElement('span'), { textContent: ' (retryable)' }));
       out.append(d);
       if ((body.problems || []).length) out.append(problems(body.problems));

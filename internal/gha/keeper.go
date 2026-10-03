@@ -2,7 +2,6 @@ package gha
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -41,10 +40,6 @@ type Keeper struct {
 	lifetime time.Duration
 	margin   time.Duration
 
-	// findTimeout is how long DispatchAndFind waits for a dispatched run to
-	// appear before it gives up and lets the next tick try again.
-	findTimeout time.Duration
-
 	log *slog.Logger
 	now func() time.Time
 
@@ -65,15 +60,14 @@ type KeeperConfig struct {
 // NewKeeper builds a keeper.
 func NewKeeper(c KeeperConfig) *Keeper {
 	return &Keeper{
-		client:      c.Client,
-		targets:     c.Targets,
-		interval:    c.Interval,
-		lifetime:    c.Lifetime,
-		margin:      c.Margin,
-		findTimeout: 60 * time.Second,
-		log:         c.Log,
-		now:         time.Now,
-		locks:       map[string]*sync.Mutex{},
+		client:   c.Client,
+		targets:  c.Targets,
+		interval: c.Interval,
+		lifetime: c.Lifetime,
+		margin:   c.Margin,
+		log:      c.Log,
+		now:      time.Now,
+		locks:    map[string]*sync.Mutex{},
 	}
 }
 
@@ -210,17 +204,22 @@ func (k *Keeper) tickTarget(ctx context.Context, t Target) {
 	}
 }
 
-// dispatch starts a run and reports whether one was started. It logs the
-// outcome rather than returning an error: a failed dispatch is a thing to retry
-// on the next tick, or on the next request, not a reason to stop.
+// dispatch starts a run and reports whether the dispatch was accepted. It logs
+// the outcome rather than returning an error: a failed dispatch is a thing to
+// retry on the next tick, or on the next request, not a reason to stop.
+//
+// It does not wait for the run to appear. The dispatch POST is what matters and
+// it returns in about a second; waiting for the run to show up in the listing
+// can take a minute, and on the request path that wait is a page that hangs.
+// The run is found by the next listing instead, where its absence at worst
+// means one more dispatch attempt — which never cancels a queued successor.
 func (k *Keeper) dispatch(ctx context.Context, t Target, why string) bool {
 	k.log.Info("dispatching a run", "env", t.ID, "repo", t.Repo, "workflow", t.Workflow, "reason", why)
-	run, err := k.client.DispatchAndFind(ctx, t.Repo, t.Workflow, t.Ref, t.Inputs, k.findTimeout)
-	if err != nil {
+	if err := k.client.Dispatch(ctx, t.Repo, t.Workflow, t.Ref, t.Inputs); err != nil {
 		k.log.Warn("could not dispatch a run", "env", t.ID, "repo", t.Repo, "error", err)
 		return false
 	}
-	k.log.Info("dispatched", "env", t.ID, "run", run.ID, "url", run.HTMLURL, "status", run.Status)
+	k.log.Info("dispatched", "env", t.ID, "repo", t.Repo)
 	return true
 }
 
@@ -255,8 +254,3 @@ func LifetimeForRun(sessionHours string) time.Duration {
 		return 4 * time.Hour
 	}
 }
-
-// errNoRun is returned by DispatchAndFind when GitHub accepted a dispatch but no
-// run appeared. It is a distinct value so a caller can treat "accepted but not
-// yet visible" differently from "rejected".
-var errNoRun = errors.New("gha: no run appeared after dispatch")
