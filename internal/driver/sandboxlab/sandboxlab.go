@@ -85,6 +85,20 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 	if cfg.PublicURL != "" {
 		console = strings.TrimRight(cfg.PublicURL, "/") + cfg.BasePath
 	}
+
+	// A keyed call: it is what says whether the key this service holds is the
+	// one the environment accepts, rather than merely that it is up.
+	var sandboxes json.RawMessage
+	if err := d.call(ctx, env, http.MethodGet, "/api/v1/sandboxes", env.APIKey, nil, &sandboxes, false); err != nil {
+		if isUnauthorized(err) {
+			return driver.Ready{
+				ConsoleURL:   console,
+				Unauthorized: true,
+				Message:      "the environment is up but did not accept the key set for it",
+			}, nil
+		}
+		return driver.Ready{Message: "sandboxes: " + err.Error()}, nil
+	}
 	return driver.Ready{Ready: true, ConsoleURL: console}, nil
 }
 
@@ -319,4 +333,14 @@ var errNotFound = &httpError{status: http.StatusNotFound, body: "not found"}
 func isNotFound(err error) bool {
 	he, ok := err.(*httpError)
 	return ok && he.status == http.StatusNotFound
+}
+
+// isUnauthorized reports whether a call was refused for its key rather than for
+// anything else.
+func isUnauthorized(err error) bool {
+	he, ok := err.(*httpError)
+	if !ok {
+		return false
+	}
+	return he.status == http.StatusUnauthorized || he.status == http.StatusForbidden
 }

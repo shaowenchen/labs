@@ -29,6 +29,10 @@ type SessionService interface {
 	// EnsureStarted starts a cluster of each kind that is not up, so a visit to
 	// the page can bring one up before anyone asks for a lab.
 	EnsureStarted(ctx context.Context)
+
+	// SetKey records a key entered for an environment, overriding the configured
+	// one, and reports whether the environment is one this deployment runs.
+	SetKey(ctx context.Context, envID, key string) bool
 }
 
 // Deps is what the server needs.
@@ -80,6 +84,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
 	mux.HandleFunc("POST /api/v1/ensure", s.ensure)
+	mux.HandleFunc("PUT /api/v1/environments/{id}/key", s.setKey)
 	mux.HandleFunc("GET /api/v1/config", s.getConfig)
 	mux.HandleFunc("GET /api/v1/describe", s.describe)
 
@@ -202,6 +207,9 @@ func envStatusJSON(envs []session.EnvStatus) []map[string]any {
 		}
 		if e.Message != "" {
 			m["message"] = e.Message
+		}
+		if e.Unauthorized {
+			m["unauthorized"] = true
 		}
 		out = append(out, m)
 	}

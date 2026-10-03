@@ -176,18 +176,6 @@ func (c *Client) RunLogs(ctx context.Context, repo string, runID int64) (string,
 	return string(raw), nil
 }
 
-// CancelRun asks GitHub to cancel a run.
-//
-// It is used for a run that looks stuck: one that has been going far longer than
-// the boot takes and has still not announced an address. Cancelling it and
-// dispatching a fresh one is the recovery, and it is deliberately not something
-// done on every tick — cancelling a run that is only slow would restart the boot
-// it is in the middle of, forever.
-func (c *Client) CancelRun(ctx context.Context, repo string, runID int64) error {
-	path := fmt.Sprintf("/repos/%s/actions/runs/%d/cancel", repo, runID)
-	return c.do(ctx, http.MethodPost, path, nil, nil)
-}
-
 // do performs one request, decoding a JSON body into out when out is non-nil.
 func (c *Client) do(ctx context.Context, method, path string, body, out any) error {
 	var reader io.Reader

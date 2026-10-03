@@ -388,3 +388,48 @@ func TestEnsureDoesNothingWhenUnconfigured(t *testing.T) {
 		t.Errorf("configured = %v, want false", got["configured"])
 	}
 }
+
+func (f *fakeSvc) SetKey(_ context.Context, envID, key string) bool {
+	if _, known := f.sessions["__envs__"]; known {
+		return false
+	}
+	return envID == "APPLAB" || envID == "applab-1"
+}
+
+// An environment up but refusing the key is reported as such, so the page can
+// offer a way to enter one rather than showing a wait that never ends.
+func TestConfigReportsUnauthorizedEnvironment(t *testing.T) {
+	svc := &fakeSvc{status: []session.EnvStatus{{ID: "APPLAB", Kind: model.KindApplab, Unauthorized: true, ConsoleURL: "https://a.example.com/applab"}}}
+	s := newTestServer(t, svc, testConfig(), 5)
+
+	got := data[map[string]any](t, do(t, s, "GET", "/api/v1/config", ""))
+	envs, _ := got["environments"].([]any)
+	if len(envs) != 1 {
+		t.Fatalf("environments = %v", got["environments"])
+	}
+	e, _ := envs[0].(map[string]any)
+	if e["unauthorized"] != true {
+		t.Errorf("unauthorized = %v, want true", e["unauthorized"])
+	}
+}
+
+// Entering a key records it; an unknown environment is a 404 and an empty key a
+// 400.
+func TestSetKey(t *testing.T) {
+	svc := &fakeSvc{}
+	s := newTestServer(t, svc, testConfig(), 5)
+
+	if w := do(t, s, "PUT", "/api/v1/environments/APPLAB/key", `{"key":"sekret"}`); w.Code != http.StatusOK {
+		t.Fatalf("set key: status = %d, body %s", w.Code, w.Body.String())
+	}
+	if w := do(t, s, "PUT", "/api/v1/environments/APPLAB/key", `{"key":"  "}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("empty key: status = %d, want 400", w.Code)
+	}
+	if w := do(t, s, "PUT", "/api/v1/environments/NOPE/key", `{"key":"x"}`); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown env: status = %d, want 404", w.Code)
+	}
+	// The key must never come back in a response.
+	if w := do(t, s, "PUT", "/api/v1/environments/APPLAB/key", `{"key":"another"}`); strings.Contains(w.Body.String(), "another") {
+		t.Fatal("the response echoed the key")
+	}
+}

@@ -49,6 +49,11 @@ func (f *fakeAppLab) handler(base string) http.Handler {
 		f.note("healthz")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
+	// The keyed probe Ready makes; it answers OK so the environment reads ready.
+	mux.HandleFunc("GET /api/v1/apps", func(w http.ResponseWriter, r *http.Request) {
+		f.note("apps")
+		writeEnvelope(w, http.StatusOK, []any{})
+	})
 	mux.HandleFunc("POST /api/v1/apps", func(w http.ResponseWriter, r *http.Request) {
 		f.note("create")
 		if f.conflict {

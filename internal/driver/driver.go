@@ -14,7 +14,7 @@ import (
 	"github.com/shaowenchen/labs/internal/model"
 )
 
-// Ready is what an unauthenticated probe of an environment found.
+// Ready is what a probe of an environment found.
 type Ready struct {
 	// Ready is whether the environment answered as a working deployment.
 	Ready bool
@@ -22,6 +22,11 @@ type Ready struct {
 	// ConsoleURL is the address a caller should be sent to, derived from what
 	// the environment reported rather than assumed. Empty when not ready.
 	ConsoleURL string
+
+	// Unauthorized says the environment is up but refused the key the service
+	// holds — so it is reachable, and only the key is wrong. It is separate from
+	// not-ready because the answer is different: a key to enter, not a wait.
+	Unauthorized bool
 
 	// Message explains a not-ready verdict, in words worth logging.
 	Message string

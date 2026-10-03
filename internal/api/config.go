@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/shaowenchen/labs/internal/buildinfo"
 )
@@ -60,4 +61,30 @@ func (s *Server) ensure(w http.ResponseWriter, r *http.Request) {
 		"configured": s.cfg.Usable(),
 		"problems":   s.cfg.Problems,
 	})
+}
+
+// setKey records a key entered on the page for an environment whose configured
+// key was refused. It is how a caller fixes a wrong key without a redeploy.
+//
+// The key is held in memory only — a restart forgets it — which is the right
+// weight for a value the page asks for only when the configured one does not
+// work. It is never logged and never returned.
+func (s *Server) setKey(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		fail(w, r, err)
+		return
+	}
+	if strings.TrimSpace(body.Key) == "" {
+		fail(w, r, BadRequest("a key is required"))
+		return
+	}
+	if !s.svc.SetKey(r.Context(), id, body.Key) {
+		fail(w, r, NotFound("environment %q", id))
+		return
+	}
+	respond(w, http.StatusOK, map[string]any{"id": id, "set": true})
 }

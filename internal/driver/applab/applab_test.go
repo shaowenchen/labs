@@ -18,10 +18,11 @@ import (
 // fakeAppLab is a scripted AppLab: it records the calls made against it and
 // answers the shapes the driver expects.
 type fakeAppLab struct {
-	mu       sync.Mutex
-	calls    []string
-	key      string
-	conflict bool // POST /apps answers 409, as it does for an existing app
+	mu        sync.Mutex
+	calls     []string
+	key       string
+	refuseKey bool
+	conflict  bool // POST /apps answers 409, as it does for an existing app
 }
 
 func (f *fakeAppLab) record(call string) {
@@ -45,6 +46,17 @@ func (f *fakeAppLab) server(base string) *httptest.Server {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		f.record("healthz")
 		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
+	// The keyed probe Ready makes to tell "usable" from "key refused". The
+	// 401/403 behaviour is set by the test through f.refuseKey.
+	mux.HandleFunc("GET /api/v1/apps", func(w http.ResponseWriter, r *http.Request) {
+		f.record("apps")
+		if f.refuseKey {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"invalid key"}`))
+			return
+		}
+		writeData(w, http.StatusOK, []any{})
 	})
 	mux.HandleFunc("POST /api/v1/apps", func(w http.ResponseWriter, r *http.Request) {
 		f.record("create")
@@ -245,4 +257,26 @@ func contains(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// An environment that is up but refuses the key must report Unauthorized, not a
+// generic not-ready: the answer is a key to enter, not a wait.
+func TestReadyReportsUnauthorized(t *testing.T) {
+	f := &fakeAppLab{refuseKey: true}
+	srv := f.server("/applab")
+	defer srv.Close()
+
+	r, err := newDriver(t).Ready(context.Background(), envWithURL(srv.URL, "/applab"))
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if r.Ready {
+		t.Fatal("Ready = true for an environment that refused the key")
+	}
+	if !r.Unauthorized {
+		t.Fatal("Ready should report Unauthorized when the key is refused")
+	}
+	if r.ConsoleURL == "" {
+		t.Error("an unauthorized environment still has an address")
+	}
 }

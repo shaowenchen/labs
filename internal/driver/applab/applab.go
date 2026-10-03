@@ -44,9 +44,14 @@ func New(log *slog.Logger) *Driver {
 // Kind reports the kind this driver handles.
 func (d *Driver) Kind() model.Kind { return model.KindApplab }
 
-// Ready probes GET /api/v1/config, which needs no key, and confirms with
-// /healthz. A non-200, a timeout or a body that is not AppLab's config all mean
-// "not up yet" rather than an error: that is the ordinary gap between runs.
+// Ready probes GET /api/v1/config, which needs no key, and then a call that
+// does — to tell "up and usable" from "up but the key is wrong".
+//
+// The distinction is the whole point of the second call: an environment that
+// answers its config but refuses the admin key is reachable and only needs the
+// right key, which the page can ask for, rather than a wait that never ends.
+// A non-200, a timeout or a body that is not AppLab's config otherwise means
+// "not up yet", the ordinary gap between runs.
 func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error) {
 	var cfg struct {
 		APIVersion string `json:"api_version"`
@@ -63,6 +68,20 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 	var health json.RawMessage
 	if err := d.call(ctx, env, http.MethodGet, "/healthz", "", nil, &health, false); err != nil {
 		return driver.Ready{Message: "healthz: " + err.Error()}, nil
+	}
+
+	// A keyed call: it is what says whether the key this service holds is the
+	// one the environment accepts.
+	var apps json.RawMessage
+	if err := d.call(ctx, env, http.MethodGet, "/api/v1/apps", env.APIKey, nil, &apps, false); err != nil {
+		if isUnauthorized(err) {
+			return driver.Ready{
+				ConsoleURL:   env.BaseURL(),
+				Unauthorized: true,
+				Message:      "the environment is up but did not accept the key set for it",
+			}, nil
+		}
+		return driver.Ready{Message: "apps: " + err.Error()}, nil
 	}
 	return driver.Ready{Ready: true, ConsoleURL: env.BaseURL()}, nil
 }
@@ -266,4 +285,14 @@ func isAlreadyExists(err error) bool {
 		return false
 	}
 	return he.status == http.StatusConflict || strings.Contains(strings.ToLower(he.body), "exists")
+}
+
+// isUnauthorized reports whether a call was refused for its key rather than for
+// anything else: 401, or 403 missing a credential.
+func isUnauthorized(err error) bool {
+	he, ok := err.(*httpError)
+	if !ok {
+		return false
+	}
+	return he.status == http.StatusUnauthorized || he.status == http.StatusForbidden
 }

@@ -40,11 +40,6 @@ type Keeper struct {
 	lifetime time.Duration
 	margin   time.Duration
 
-	// bootCeiling is how long a run may take to bring an environment up before
-	// it is treated as stuck. Past it, a run that has still announced nothing is
-	// cancelled and a fresh one dispatched.
-	bootCeiling time.Duration
-
 	log *slog.Logger
 	now func() time.Time
 
@@ -65,15 +60,14 @@ type KeeperConfig struct {
 // NewKeeper builds a keeper.
 func NewKeeper(c KeeperConfig) *Keeper {
 	return &Keeper{
-		client:      c.Client,
-		targets:     c.Targets,
-		interval:    c.Interval,
-		lifetime:    c.Lifetime,
-		margin:      c.Margin,
-		bootCeiling: 20 * time.Minute,
-		log:         c.Log,
-		now:         time.Now,
-		locks:       map[string]*sync.Mutex{},
+		client:   c.Client,
+		targets:  c.Targets,
+		interval: c.Interval,
+		lifetime: c.Lifetime,
+		margin:   c.Margin,
+		log:      c.Log,
+		now:      time.Now,
+		locks:    map[string]*sync.Mutex{},
 	}
 }
 
@@ -149,38 +143,10 @@ func (k *Keeper) EnsureRunning(ctx context.Context, t Target) bool {
 	case hasQueued:
 		return true
 	case newestRun != nil && newestRun.Running():
-		// Only a run that has gone far past a boot is replaced. Restarting a
-		// boot in progress would be a loop, not a recovery.
-		if k.cancelStuck(ctx, t, newestRun) {
-			return k.dispatch(ctx, t, "the previous run was stuck")
-		}
 		return true
 	default:
 		return k.dispatch(ctx, t, "a request needed an environment and none was running")
 	}
-}
-
-// cancelStuck cancels the given run if it has been going long enough that it is
-// not merely slow, and reports whether it did.
-//
-// It is the "there is already one running; drop it and start fresh" rule, with
-// the one guard that makes it safe: a run is only cancelled past the boot
-// ceiling. Cancelling on sight would restart a boot that is in progress, every
-// time a request or a tick looked, and nothing would ever finish coming up.
-func (k *Keeper) cancelStuck(ctx context.Context, t Target, run *Run) bool {
-	if run == nil {
-		return false
-	}
-	age := k.now().Sub(run.begun())
-	if age < k.bootCeiling {
-		return false
-	}
-	k.log.Info("cancelling a run that has not come up", "env", t.ID, "run", run.ID, "age", age.Truncate(time.Second))
-	if err := k.client.CancelRun(ctx, t.Repo, run.ID); err != nil {
-		k.log.Warn("could not cancel a stuck run", "env", t.ID, "run", run.ID, "error", err)
-		return false
-	}
-	return true
 }
 
 // tickTarget is the state machine for one environment.
@@ -226,12 +192,7 @@ func (k *Keeper) tickTarget(ctx context.Context, t Target) {
 
 	case newestRun != nil && newestRun.Running():
 		// A run is live. Usually leave it alone; queue a successor once it is
-		// near its expected end. But a run that has gone far past a boot without
-		// ever coming up is stuck, and is dropped so a fresh one can start.
-		if k.cancelStuck(ctx, t, newestRun) {
-			k.dispatch(ctx, t, "the previous run was stuck")
-			return
-		}
+		// near its expected end.
 		age := k.now().Sub(newestRun.begun())
 		if age < k.lifetime-k.margin {
 			k.log.Debug("a run is in progress", "env", t.ID, "age", age.Truncate(time.Second))

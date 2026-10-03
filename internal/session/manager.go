@@ -84,6 +84,12 @@ type Manager struct {
 
 	mu    sync.Mutex
 	ready map[string]readyEntry
+
+	// keys are environment keys entered at runtime, overriding the configured
+	// one. They live only in memory: a key entered on the page is there for the
+	// process's life and is gone on a restart, which is the right weight for a
+	// value the page asks for only when the configured one is refused.
+	keys map[string]string
 }
 
 type readyEntry struct {
@@ -102,7 +108,40 @@ func New(cfg config.Config, st *store.Store, drivers map[model.Kind]driver.Drive
 		readyTTL:     15 * time.Second,
 		readyTimeout: 6 * time.Second,
 		ready:        map[string]readyEntry{},
+		keys:         map[string]string{},
 	}
+}
+
+// SetKey records a key entered for an environment, overriding the configured
+// one, clears the readiness cache so the next probe reports the new verdict, and
+// returns false when the environment is not one this deployment runs.
+func (m *Manager) SetKey(ctx context.Context, envID, key string) bool {
+	env, ok := m.cfg.EnvByID(envID)
+	if !ok {
+		return false
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	m.mu.Lock()
+	m.keys[envID] = key
+	delete(m.ready, envID) // re-probe with the new key
+	m.mu.Unlock()
+	m.log.Info("an environment key was set from the page", "env", env.ID)
+	return true
+}
+
+// keyed is env with its API key resolved: the one entered at runtime if any,
+// else the configured one. Every driver call goes through this, so a key entered
+// on the page is the key that is used.
+func (m *Manager) keyed(env model.Env) model.Env {
+	m.mu.Lock()
+	if k := m.keys[env.ID]; k != "" {
+		env.APIKey = k
+	}
+	m.mu.Unlock()
+	return env
 }
 
 // WithClock replaces the clock, for tests.
@@ -216,7 +255,7 @@ func (m *Manager) provisionPass(ctx context.Context, kind model.Kind, clientIP s
 		}
 
 		sess.App = app
-		prov, err := drv.Provision(ctx, env, driver.ProvisionRequest{
+		prov, err := drv.Provision(ctx, m.keyed(env), driver.ProvisionRequest{
 			SessionID: sess.ID,
 			App:       app,
 		})
@@ -321,7 +360,7 @@ func (m *Manager) Release(ctx context.Context, id string) error {
 		return m.store.Drop(id)
 	}
 	if drv := m.drivers[sess.Kind]; drv != nil {
-		if err := drv.Release(ctx, env, sess); err != nil {
+		if err := drv.Release(ctx, m.keyed(env), sess); err != nil {
 			return err
 		}
 	}
@@ -355,7 +394,7 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 			continue
 		}
 		live := m.liveFor(env.ID)
-		if err := drv.Reconcile(ctx, env, live); err != nil {
+		if err := drv.Reconcile(ctx, m.keyed(env), live); err != nil {
 			m.log.Warn("reconcile failed", "env", env.ID, "error", err)
 			if firstErr == nil {
 				firstErr = err
@@ -373,7 +412,7 @@ func (m *Manager) Warm(ctx context.Context) {
 			continue
 		}
 		for _, app := range env.Slots {
-			if err := drv.EnsureSlot(ctx, env, app); err != nil {
+			if err := drv.EnsureSlot(ctx, m.keyed(env), app); err != nil {
 				m.log.Warn("could not ensure a slot", "env", env.ID, "app", app, "error", err)
 			}
 		}
@@ -389,6 +428,10 @@ type EnvStatus struct {
 	Message    string
 	Occupied   int
 	Capacity   int
+
+	// Unauthorized says the environment is up but refused the key this service
+	// holds. The page offers a way to enter the right one.
+	Unauthorized bool
 }
 
 // Status reports every environment's readiness.
@@ -405,6 +448,7 @@ func (m *Manager) Status(ctx context.Context) []EnvStatus {
 			st.Ready = r.Ready
 			st.ConsoleURL = r.ConsoleURL
 			st.Message = r.Message
+			st.Unauthorized = r.Unauthorized
 		}
 		out = append(out, st)
 	}
@@ -449,6 +493,7 @@ func (m *Manager) envReady(ctx context.Context, drv driver.Driver, env model.Env
 		}
 	}
 
+	probe = m.keyed(probe)
 	probeCtx, cancel := context.WithTimeout(ctx, m.readyTimeout)
 	defer cancel()
 	r, err := drv.Ready(probeCtx, probe)
