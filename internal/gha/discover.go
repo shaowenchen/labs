@@ -104,9 +104,22 @@ func (d *Discoverer) Forget(envID string) {
 	d.mu.Unlock()
 }
 
-// lookup reads the newest run's log and extracts the address from it, or says
-// why it could not — a message for the page, not a verdict the reader has to
-// guess from.
+// lookup reads a run's log and extracts the address from it, or says why it
+// could not — a message for the page, not a verdict the reader has to guess
+// from.
+//
+// Two things GitHub does make this unreliable, and both are said plainly rather
+// than dressed up as "starting":
+//
+//   - The log archive is only served once a run has finished. While a run is in
+//     progress the endpoint answers 404, so the address cannot be read during
+//     the hours the environment is actually up.
+//   - Even a finished run's log is a zip, and this reads the bytes as text. The
+//     address is visible in the run's page and its summary; neither is a file
+//     this service can fetch.
+//
+// So this is a best-effort path. A domain configured in LABS_DOMAIN_* is the one
+// that actually works, and the message says so.
 func (d *Discoverer) lookup(ctx context.Context, env model.Env) (string, string) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
@@ -116,19 +129,21 @@ func (d *Discoverer) lookup(ctx context.Context, env model.Env) (string, string)
 		return "", "could not list the workflow's runs: " + err.Error()
 	}
 	if len(runs) == 0 {
-		return "", "no " + env.Workflow + " run has been started in " + env.Repo + " yet"
+		return "", "no " + env.Workflow + " run has been started in " + env.Repo + " yet; set LABS_DOMAIN_" + env.ID + " to the environment's hostname to skip this"
 	}
 
 	sawRunning := false
 	for _, run := range runs {
-		// Only a run that is up can have printed a live address.
-		if run.Status != "in_progress" {
+		if run.Status != "in_progress" && run.Status != "completed" {
 			continue
 		}
-		sawRunning = true
+		sawRunning = sawRunning || run.Status == "in_progress"
 		log, err := d.client.RunLogs(ctx, env.Repo, run.ID)
 		if err != nil {
-			return "", "the cluster is up but the run's log could not be read: " + err.Error()
+			// The common case: a running run has no downloadable log yet. Kept
+			// short, because the reader's answer is the same whichever way this
+			// failed — set the domain.
+			return "", "the environment's address could not be read from its run log; set LABS_DOMAIN_" + env.ID + " to its hostname"
 		}
 		if base, ok := ExtractBaseURL(log, env.BasePath); ok {
 			return base, ""
@@ -137,5 +152,5 @@ func (d *Discoverer) lookup(ctx context.Context, env model.Env) (string, string)
 	if !sawRunning {
 		return "", "the cluster is starting; its run has not begun yet"
 	}
-	return "", "the cluster is up but its address has not appeared in the run's log yet"
+	return "", "the environment's address has not appeared in its run log; set LABS_DOMAIN_" + env.ID + " to its hostname"
 }
