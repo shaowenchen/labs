@@ -55,3 +55,53 @@ func TestCommitRecoveredWithoutLdflags(t *testing.T) {
 		t.Errorf("Commit = %q, want a short revision", Commit)
 	}
 }
+
+// The fallback must not blank out the placeholder: with nothing to read, the
+// answer stays "unknown", not "".
+func TestNoSourceKeepsUnknown(t *testing.T) {
+	savedCommit, savedTime := Commit, BuildTime
+	t.Cleanup(func() { Commit, BuildTime = savedCommit, savedTime })
+
+	// Simulate a build with the linker defaults and nothing to fall back on.
+	Commit, BuildTime = "unknown", "unknown"
+	// init already ran for this binary with real VCS data, so exercise the
+	// helpers directly instead: they must return "" rather than a value.
+	for _, k := range commitVars {
+		t.Setenv(k, "")
+	}
+	if got := commitFromEnv(); got != "" {
+		t.Errorf("commitFromEnv with nothing set = %q, want empty", got)
+	}
+	if got := shorten(""); got != "" {
+		t.Errorf("shorten(\"\") = %q, want empty", got)
+	}
+}
+
+func TestShorten(t *testing.T) {
+	cases := map[string]string{
+		"1234567890abcdef": "1234567",
+		"abc1234":          "abc1234",
+		"abc":              "abc",
+		"":                 "",
+	}
+	for in, want := range cases {
+		if got := shorten(in); got != want {
+			t.Errorf("shorten(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The platform variables are read from the environment when the linker did not
+// supply a commit.
+func TestCommitFromEnv(t *testing.T) {
+	for _, k := range commitVars {
+		t.Setenv(k, "")
+	}
+	t.Setenv("VERCEL_GIT_COMMIT_SHA", "deadbeef1234")
+	if got := commitFromEnv(); got != "deadbeef1234" {
+		t.Errorf("commitFromEnv = %q, want the Vercel SHA", got)
+	}
+	if got := shorten(commitFromEnv()); got != "deadbee" {
+		t.Errorf("shortened = %q, want deadbee", got)
+	}
+}

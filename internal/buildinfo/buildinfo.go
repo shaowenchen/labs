@@ -13,6 +13,7 @@
 package buildinfo
 
 import (
+	"os"
 	"runtime/debug"
 	"strings"
 )
@@ -28,13 +29,31 @@ var Commit = "unknown"
 // page that shows it is answering "how current is this deployment".
 var BuildTime = "unknown"
 
-// init fills anything the linker did not, from the module's build metadata.
+// init fills anything the linker did not.
 //
-// It runs after the package variables are set and after the linker has had its
-// say, so it only ever supplies what is still missing.
+// Two sources, in order. Environment variables first, because a host that
+// builds the source itself usually knows the revision it is building and passes
+// it in one of the well-known variables below — and it may build from an
+// archive with no .git, which is exactly when the second source has nothing to
+// say. Then Go's own build metadata, which `go build` records when it runs in a
+// git working copy.
 func init() {
 	if Commit != "" && Commit != "unknown" && BuildTime != "" && BuildTime != "unknown" {
 		return
+	}
+
+	if Commit == "" || Commit == "unknown" {
+		// Only assign when something was found: assigning an empty string would
+		// replace the "unknown" placeholder with nothing, and the page would
+		// show a blank where "unknown" is the honest answer.
+		if sha := commitFromEnv(); sha != "" {
+			Commit = shorten(sha)
+		}
+	}
+	if BuildTime == "" || BuildTime == "unknown" {
+		if t := timeFromEnv(); t != "" {
+			BuildTime = t
+		}
 	}
 
 	info, ok := debug.ReadBuildInfo()
@@ -47,10 +66,7 @@ func init() {
 	}
 
 	if (Commit == "" || Commit == "unknown") && settings["vcs.revision"] != "" {
-		Commit = settings["vcs.revision"]
-		if len(Commit) > 7 {
-			Commit = Commit[:7]
-		}
+		Commit = shorten(settings["vcs.revision"])
 		if settings["vcs.modified"] == "true" {
 			Commit += "-dirty"
 		}
@@ -62,6 +78,49 @@ func init() {
 	if (BuildTime == "" || BuildTime == "unknown") && settings["vcs.time"] != "" {
 		BuildTime = settings["vcs.time"]
 	}
+}
+
+// commitVars are the environment variables platforms use to hand a build the
+// revision it is building. Vercel's is first: it builds from a snapshot with no
+// .git, so this is the only place the commit exists there.
+var commitVars = []string{
+	"VERCEL_GIT_COMMIT_SHA",
+	"GITHUB_SHA",
+	"CI_COMMIT_SHA",  // GitLab
+	"SOURCE_VERSION", // Heroku
+	"COMMIT_SHA",
+	"GIT_COMMIT",
+	"REVISION",
+}
+
+func commitFromEnv() string {
+	for _, name := range commitVars {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// timeFromEnv looks for a build timestamp in the variables a platform might
+// provide. Few do, so it usually returns nothing and the VCS commit time or
+// "unknown" stands.
+func timeFromEnv() string {
+	for _, name := range []string{"BUILD_TIME", "BUILD_TIMESTAMP", "SOURCE_DATE_EPOCH"} {
+		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// shorten trims a revision to the seven characters git itself abbreviates to,
+// leaving anything shorter alone.
+func shorten(rev string) string {
+	if len(rev) > 7 {
+		return rev[:7]
+	}
+	return rev
 }
 
 // String renders the version and commit as one line, for logs and /api/v1/config.
