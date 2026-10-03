@@ -78,9 +78,6 @@ func TestRepositoryBecomesAnEnvironment(t *testing.T) {
 	if e.Workflow != "debugger.yml" {
 		t.Errorf("workflow = %q, want debugger.yml", e.Workflow)
 	}
-	if e.Ref != "main" {
-		t.Errorf("ref = %q, want main", e.Ref)
-	}
 	if e.BasePath != "/applab" {
 		t.Errorf("base_path = %q, want /applab", e.BasePath)
 	}

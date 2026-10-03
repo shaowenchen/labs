@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -25,17 +26,59 @@ type Client struct {
 	token string
 	hc    *http.Client
 	now   func() time.Time
+
+	mu       sync.Mutex
+	branches map[string]string // repo -> its default branch, once looked up
 }
 
 // New returns a client. base is the REST root, "https://api.github.com" unless
 // a test or GitHub Enterprise says otherwise.
 func New(base, token string) *Client {
 	return &Client{
-		base:  strings.TrimRight(base, "/"),
-		token: token,
-		hc:    &http.Client{Timeout: 30 * time.Second},
-		now:   time.Now,
+		base:     strings.TrimRight(base, "/"),
+		token:    token,
+		hc:       &http.Client{Timeout: 30 * time.Second},
+		now:      time.Now,
+		branches: map[string]string{},
 	}
+}
+
+// resolveRef turns an empty ref into the repository's default branch.
+//
+// An empty ref is the common case: the workflows this service dispatches live
+// on whatever branch the repository publishes from, which is master for one
+// project and main for the other, and hardcoding either dispatches a ref that
+// does not exist — a workflow_dispatch against a missing branch is a 404 and no
+// run at all, which looks exactly like nothing happening.
+//
+// The answer is cached per repository: it changes rarely and this is called on
+// every listing and every dispatch.
+func (c *Client) resolveRef(ctx context.Context, repo, ref string) (string, error) {
+	if ref != "" {
+		return ref, nil
+	}
+
+	c.mu.Lock()
+	cached, ok := c.branches[repo]
+	c.mu.Unlock()
+	if ok {
+		return cached, nil
+	}
+
+	var out struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/repos/"+repo, nil, &out); err != nil {
+		return "", fmt.Errorf("could not read %s's default branch: %w", repo, err)
+	}
+	if out.DefaultBranch == "" {
+		return "", fmt.Errorf("%s reported no default branch", repo)
+	}
+
+	c.mu.Lock()
+	c.branches[repo] = out.DefaultBranch
+	c.mu.Unlock()
+	return out.DefaultBranch, nil
 }
 
 // Run is one workflow run, reduced to what the keeper decides on.
@@ -65,6 +108,10 @@ func (r Run) Running() bool { return r.Status != "completed" }
 // A dispatch is asynchronous: a 204 means GitHub accepted the request, not that
 // a run exists yet. Finding the run it created is DispatchAndWait's job.
 func (c *Client) Dispatch(ctx context.Context, repo, workflow, ref string, inputs map[string]string) error {
+	ref, err := c.resolveRef(ctx, repo, ref)
+	if err != nil {
+		return err
+	}
 	body := map[string]any{"ref": ref}
 	if len(inputs) > 0 {
 		body["inputs"] = inputs
@@ -79,6 +126,10 @@ func (c *Client) Dispatch(ctx context.Context, repo, workflow, ref string, input
 func (c *Client) Runs(ctx context.Context, repo, workflow, ref string, limit int) ([]Run, error) {
 	if limit <= 0 {
 		limit = 10
+	}
+	ref, err := c.resolveRef(ctx, repo, ref)
+	if err != nil {
+		return nil, err
 	}
 	path := fmt.Sprintf("/repos/%s/actions/workflows/%s/runs?event=workflow_dispatch&branch=%s&per_page=%d",
 		repo, url.PathEscape(workflow), url.QueryEscape(ref), limit)

@@ -44,6 +44,11 @@ func (f *fakeGitHub) lastDispatch() map[string]any {
 
 func (f *fakeGitHub) server() *httptest.Server {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
+		// The default branch the service resolves an empty ref to.
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"default_branch":"master"}`))
+	})
 	mux.HandleFunc("POST /repos/{owner}/{repo}/actions/workflows/{wf}/dispatches", func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -257,5 +262,39 @@ func TestEnsureRunningLeavesALiveRunAlone(t *testing.T) {
 	}
 	if n := f.dispatchCount(); n != 0 {
 		t.Fatalf("dispatched %d times with a live run, want 0", n)
+	}
+}
+
+// An empty ref is resolved to the repository's default branch. This is the bug
+// that made a dispatch against a master-defaulted repository do nothing: the
+// service hardcoded "main", the branch did not exist, and workflow_dispatch
+// answered 404 with no run.
+func TestDispatchResolvesTheDefaultBranch(t *testing.T) {
+	f := &fakeGitHub{}
+	srv := f.server()
+	defer srv.Close()
+
+	c := New(srv.URL, "token")
+	if err := c.Dispatch(context.Background(), "o/r", "debugger.yml", "", map[string]string{"a": "b"}); err != nil {
+		t.Fatalf("Dispatch with an empty ref: %v", err)
+	}
+	got := f.lastDispatch()
+	if got["ref"] != "master" {
+		t.Errorf("dispatched ref = %v, want the repository's default branch (master)", got["ref"])
+	}
+}
+
+// An explicit ref is used as given, without asking GitHub.
+func TestDispatchHonoursAnExplicitRef(t *testing.T) {
+	f := &fakeGitHub{}
+	srv := f.server()
+	defer srv.Close()
+
+	c := New(srv.URL, "token")
+	if err := c.Dispatch(context.Background(), "o/r", "debugger.yml", "release", nil); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if got := f.lastDispatch()["ref"]; got != "release" {
+		t.Errorf("dispatched ref = %v, want release", got)
 	}
 }

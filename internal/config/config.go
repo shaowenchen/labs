@@ -50,7 +50,11 @@ type Config struct {
 	// can point it elsewhere.
 	GitHubAPI string
 
-	// DispatchRef is the git ref workflows are dispatched on.
+	// DispatchRef forces the git ref workflows are dispatched on. Empty — the
+	// default — means each repository's own default branch, which is what a
+	// deployment almost always wants: the two projects publish from master and
+	// from main, and a hardcoded ref dispatches one that does not exist on the
+	// other, which is a 404 and no run.
 	DispatchRef string
 
 	// DispatchSessionHours is the `session_hours` input passed to a dispatched
@@ -137,7 +141,6 @@ func Load() (Config, error) {
 	setString(&cfg.LogLevel, "LABS_LOG_LEVEL", "info")
 	setString(&cfg.GitHubToken, "LABS_GITHUB_TOKEN", "")
 	setString(&cfg.GitHubAPI, "LABS_GITHUB_API", "https://api.github.com")
-	setString(&cfg.DispatchRef, "LABS_DISPATCH_REF", "main")
 	setString(&cfg.DispatchSessionHours, "LABS_DISPATCH_SESSION_HOURS", "4")
 	setString(&cfg.DomainSuffix, "LABS_DOMAIN_SUFFIX", "")
 
@@ -182,7 +185,7 @@ func Load() (Config, error) {
 	}
 
 	cfg.Repos = splitList(os.Getenv("LABS_REPOS"))
-	cfg.Envs = buildEnvs(cfg.Repos, cfg.EnvSlots, cfg.DomainSuffix)
+	cfg.Envs = buildEnvs(cfg.Repos, cfg.EnvSlots, cfg.DomainSuffix, cfg.DispatchRef)
 
 	cfg.Problems = append(cfg.Problems, cfg.Validate()...)
 	return cfg, nil
@@ -267,8 +270,6 @@ func (c Config) validateEnv(e model.Env) []string {
 	switch {
 	case e.Workflow == "":
 		add("environment %q names no workflow", e.ID)
-	case e.Ref == "":
-		add("environment %q names no ref", e.ID)
 	case !validBasePath(e.BasePath):
 		add("environment %q has base_path %q, which must be empty or start with / and not end with one", e.ID, e.BasePath)
 	case e.Domain != "" && !validHost(e.Domain):
@@ -349,7 +350,7 @@ func basePathFor(kind model.Kind) string {
 // own; it is the repository name under a shared suffix
 // (applab.<LABS_DOMAIN_SUFFIX>), or LABS_DOMAIN_<ID> for one that does not fit
 // that shape.
-func buildEnvs(repos []string, slots int, domainSuffix string) []model.Env {
+func buildEnvs(repos []string, slots int, domainSuffix, ref string) []model.Env {
 	envs := make([]model.Env, 0, len(repos))
 	for _, repo := range repos {
 		kind := kindFor(repo)
@@ -366,7 +367,7 @@ func buildEnvs(repos []string, slots int, domainSuffix string) []model.Env {
 			Kind:     kind,
 			Repo:     repo,
 			Workflow: workflowFor(kind),
-			Ref:      "main",
+			Ref:      ref,
 			Scheme:   "https",
 			Domain:   domain,
 			BasePath: basePathFor(kind),
