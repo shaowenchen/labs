@@ -319,9 +319,10 @@ func (c Config) EnvByID(id string) (model.Env, bool) {
 }
 
 // defaultEnvSlots is how many concurrent sessions each environment serves when
-// LABS_ENV_SLOTS does not say. Four app slots is a small shared environment's
-// worth, and each one costs a running app in the cluster.
-const defaultEnvSlots = 4
+// LABS_ENV_SLOTS does not say: eight app slots, which is how many applications
+// one applab cluster is expected to carry at once. Each one is a running app in
+// the cluster, so raising it raises what the cluster holds.
+const defaultEnvSlots = 8
 
 // basePathFor is the path a project's whole deployment is served under. It is a
 // function of the project, not a setting: applab is served under /applab and

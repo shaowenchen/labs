@@ -415,7 +415,7 @@ func (m *Manager) envReady(ctx context.Context, drv driver.Driver, env model.Env
 	if probe.Domain == "" {
 		base, ok := m.baseURLFor(ctx, env)
 		if !ok {
-			r := driver.Ready{Message: "waiting for the environment to report its address in its run log"}
+			r := driver.Ready{Message: "the cluster is starting; its address has not been announced yet"}
 			m.remember(env.ID, r)
 			return r
 		}

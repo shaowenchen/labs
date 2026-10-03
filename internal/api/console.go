@@ -70,7 +70,7 @@ const consoleHTML = `<!doctype html>
   <button id="go">Get a lab</button>
   <div id="out"></div>
   <div id="status"></div>
-  <h2 id="envs-title" hidden>Environments</h2>
+  <h2 id="envs-title" hidden>Cluster status</h2>
   <div id="envs"></div>
   <footer id="build"></footer>
 </main>
@@ -117,7 +117,7 @@ function renderEnvs(list) {
     st.textContent = e.ready ? 'ready' : 'starting';
     top.append(dot, name, document.createTextNode(' '), st, Object.assign(document.createElement('span'), { className: 'meta', textContent: ' · ' + e.id }));
     box.append(top);
-    if (e.capacity) box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.occupied + ' of ' + e.capacity + ' slots in use' }));
+    if (e.capacity) box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.occupied + ' of ' + e.capacity + ' application slots in use' }));
     if (e.console_url) {
       const u = document.createElement('div'); u.className = 'msg';
       const a = document.createElement('a'); a.href = e.console_url; a.textContent = e.console_url; a.target = '_blank'; a.rel = 'noopener';
