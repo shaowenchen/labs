@@ -75,23 +75,24 @@ func NewDiscoverer(c *Client) *Discoverer {
 }
 
 // Discover returns the environment's address, discovering and caching it on the
-// first call.
-func (d *Discoverer) Discover(ctx context.Context, env model.Env) (string, bool) {
+// first call. When there is no address yet it returns a message saying why, so
+// the page can show the reason rather than a generic "starting".
+func (d *Discoverer) Discover(ctx context.Context, env model.Env) (string, string) {
 	d.mu.Lock()
 	if base, ok := d.cache[env.ID]; ok {
 		d.mu.Unlock()
-		return base, true
+		return base, ""
 	}
 	d.mu.Unlock()
 
-	base, ok := d.lookup(ctx, env)
-	if !ok {
-		return "", false
+	base, why := d.lookup(ctx, env)
+	if base == "" {
+		return "", why
 	}
 	d.mu.Lock()
 	d.cache[env.ID] = base
 	d.mu.Unlock()
-	return base, true
+	return base, ""
 }
 
 // Forget drops a cached address, so the next Discover re-reads the log. It is
@@ -103,27 +104,38 @@ func (d *Discoverer) Forget(envID string) {
 	d.mu.Unlock()
 }
 
-// lookup reads the newest run's log and extracts the address from it.
-func (d *Discoverer) lookup(ctx context.Context, env model.Env) (string, bool) {
+// lookup reads the newest run's log and extracts the address from it, or says
+// why it could not — a message for the page, not a verdict the reader has to
+// guess from.
+func (d *Discoverer) lookup(ctx context.Context, env model.Env) (string, string) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	runs, err := d.client.Runs(ctx, env.Repo, env.Workflow, env.Ref, 5)
 	if err != nil {
-		return "", false
+		return "", "could not list the workflow's runs: " + err.Error()
 	}
+	if len(runs) == 0 {
+		return "", "no " + env.Workflow + " run has been started in " + env.Repo + " yet"
+	}
+
+	sawRunning := false
 	for _, run := range runs {
 		// Only a run that is up can have printed a live address.
 		if run.Status != "in_progress" {
 			continue
 		}
+		sawRunning = true
 		log, err := d.client.RunLogs(ctx, env.Repo, run.ID)
 		if err != nil {
-			continue
+			return "", "the cluster is up but the run's log could not be read: " + err.Error()
 		}
 		if base, ok := ExtractBaseURL(log, env.BasePath); ok {
-			return base, true
+			return base, ""
 		}
 	}
-	return "", false
+	if !sawRunning {
+		return "", "the cluster is starting; its run has not begun yet"
+	}
+	return "", "the cluster is up but its address has not appeared in the run's log yet"
 }

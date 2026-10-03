@@ -119,8 +119,8 @@ func TestSandboxlabRepositoryIsRecognised(t *testing.T) {
 	if e.BasePath != "/sandbox" {
 		t.Errorf("base_path = %q, want /sandbox", e.BasePath)
 	}
-	if e.Workflow != "sandboxlab.yml" {
-		t.Errorf("workflow = %q, want sandboxlab.yml", e.Workflow)
+	if e.Workflow != "debugger.yml" {
+		t.Errorf("workflow = %q, want debugger.yml", e.Workflow)
 	}
 	if e.Domain != "sandboxlab.example.com" {
 		t.Errorf("domain = %q, want sandboxlab.example.com", e.Domain)
@@ -374,5 +374,75 @@ func TestSessionTTLDefault(t *testing.T) {
 	setEnv(t, nil)
 	if got := mustLoad(t).SessionTTL; got != 2*time.Hour {
 		t.Errorf("SessionTTL = %s, want 2h", got)
+	}
+}
+
+// A sandboxlab repository gets its kind, path, and template; its key must be
+// configured because its workflow cannot be handed one.
+func TestSandboxlabNeedsAConfiguredKey(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_REPOS":               "o/sandboxlab",
+		"LABS_DOMAIN_SANDBOXLAB":   "sandboxlab-1.example.com",
+		"LABS_TEMPLATE_SANDBOXLAB": "all-in-one",
+	})
+	cfg := mustLoad(t)
+	if cfg.Usable() {
+		t.Fatal("a sandboxlab environment with no key should not be usable: its workflow cannot be handed a generated one")
+	}
+	if !hasProblem(cfg.Problems, "LABS_KEY_SANDBOXLAB") {
+		t.Fatalf("want a problem naming LABS_KEY_SANDBOXLAB, got %v", cfg.Problems)
+	}
+}
+
+func TestSandboxlabWithAKeyIsUsable(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_REPOS":               "o/sandboxlab",
+		"LABS_DOMAIN_SANDBOXLAB":   "sandboxlab-1.example.com",
+		"LABS_KEY_SANDBOXLAB":      "sb-key",
+		"LABS_TEMPLATE_SANDBOXLAB": "all-in-one",
+	})
+	cfg := mustLoad(t)
+	if !cfg.Usable() {
+		t.Fatalf("a fully configured sandboxlab environment should be usable: %v", cfg.Problems)
+	}
+	e := cfg.Envs[0]
+	if e.Kind != "sandboxlab" || e.BasePath != "/sandbox" || e.Workflow != "debugger.yml" {
+		t.Errorf("sandboxlab env = %+v", e)
+	}
+	if e.Template != "all-in-one" {
+		t.Errorf("template = %q, want all-in-one", e.Template)
+	}
+	if e.ManagedKey {
+		t.Error("a sandboxlab key is configured, not managed")
+	}
+}
+
+// A sandboxlab dispatch must not carry api_key — its workflow declares no such
+// input and GitHub rejects an unknown one.
+func TestSandboxlabDispatchCarriesNoAPIKey(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_REPOS":             "o/sandboxlab",
+		"LABS_DOMAIN_SANDBOXLAB": "sandboxlab-1.example.com",
+		"LABS_KEY_SANDBOXLAB":    "sb-key",
+	})
+	inputs := mustLoad(t).Envs[0].DispatchInputs("4")
+	if _, ok := inputs["api_key"]; ok {
+		t.Fatalf("sandboxlab dispatch carried api_key: %v", inputs)
+	}
+	if inputs["domain"] != "sandboxlab-1.example.com" {
+		t.Errorf("domain = %v, want the configured one", inputs["domain"])
+	}
+}
+
+// An applab environment with no domain is fine: the address is discovered, so
+// no domain input is sent.
+func TestNoDomainMeansNoDomainInput(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_DOMAIN_SUFFIX": ""})
+	inputs := mustLoad(t).Envs[0].DispatchInputs("4")
+	if _, ok := inputs["domain"]; ok {
+		t.Errorf("a discovered-address environment should not send a domain: %v", inputs)
+	}
+	if inputs["session_hours"] != "4" || inputs["tunnel"] != "cloudflare" {
+		t.Errorf("inputs = %v", inputs)
 	}
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/shaowenchen/labs/internal/config"
 	"github.com/shaowenchen/labs/internal/driver"
 	"github.com/shaowenchen/labs/internal/driver/applab"
+	"github.com/shaowenchen/labs/internal/driver/sandboxlab"
 	"github.com/shaowenchen/labs/internal/gha"
 	"github.com/shaowenchen/labs/internal/logging"
 	"github.com/shaowenchen/labs/internal/model"
@@ -83,17 +84,19 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 
 	st := store.New()
 
-	// One driver per kind the deployment actually runs. A kind with no driver
-	// (sandboxlab, which is not implemented) is left out, and its environment
-	// simply never reports ready — the configuration already lists that as a
-	// problem, so this is not a second, silent failure.
+	// One driver per kind the deployment actually runs. Both kinds are
+	// implemented: applab mints a per-app key, sandboxlab creates a sandbox with
+	// its own two-hour clock.
 	drivers := map[model.Kind]driver.Driver{}
 	for _, env := range cfg.Envs {
 		if _, ok := drivers[env.Kind]; ok {
 			continue
 		}
-		if env.Kind == model.KindApplab {
+		switch env.Kind {
+		case model.KindApplab:
 			drivers[env.Kind] = applab.New(log)
+		case model.KindSandboxlab:
+			drivers[env.Kind] = sandboxlab.New(cfg.SessionTTL, log)
 		}
 	}
 

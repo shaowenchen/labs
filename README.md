@@ -183,17 +183,25 @@ the domain you configured here.
 **applab — one line, for blue/green.** The `concurrency.group` change above,
 which lets two environments of the same kind run at once.
 
-**sandboxlab — not yet.** Its driver is not implemented; a configuration naming
-a sandboxlab environment reports a problem and that environment simply never
-becomes ready. When it is added, sandboxlab currently has a single
-deployment-wide key with no per-user keys (they were removed upstream), so its
-sessions would share one credential — a real limitation, not a detail, and the
-reason applab came first.
+**sandboxlab — one secret.** sandboxlab's `debugger.yml` takes no `api_key`
+input, so labs cannot choose the key and hand it over; the key must be set on
+both sides instead. Set the repository secret `SANDBOX_API_KEY` to a value and
+put the same value in `LABS_KEY_SANDBOXLAB`. That secret is the one the debugger
+workflow installs into the chart, so the environment comes up with the key labs
+holds. sandboxlab's `domain` input is a choice — only
+`sandboxlab-1.chenshaowen.com` and `sandboxlab-2.chenshaowen.com` are accepted —
+so a named tunnel must serve one of those hostnames, and labs is pointed at it
+with `LABS_DOMAIN_SANDBOXLAB` (or a suffix that produces it).
 
-**If you would rather not have labs generate the key** — for instance because
-you rotate it yourself — set the repository secret `APPLAB_API_KEY` and put the
-same value in `LABS_KEY_APPLAB`. Then labs uses that key and does not send an
-`api_key` input.
+Because there is one key for the whole sandboxlab deployment, a lab handed out
+from it carries that key and the warning that says so. sandboxlab removed
+per-user keys upstream, so this is what the deployment supports; a returned
+per-user key would change only the sandboxlab driver.
+
+**If you would rather not have labs generate the applab key** — for instance
+because you rotate it yourself — set the repository secret `APPLAB_API_KEY` and
+put the same value in `LABS_KEY_APPLAB`. Then labs uses that key and does not
+send an `api_key` input.
 
 ## Configuration
 

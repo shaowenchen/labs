@@ -86,25 +86,26 @@ type Env struct {
 	ManagedKey bool `json:"-"`
 }
 
-// DispatchInputs is the workflow_dispatch input map for this environment: the
-// session length, a named tunnel, and this environment's own domain.
+// DispatchInputs is the workflow_dispatch input map for this environment.
 //
-// The defaults are what the debugger workflows declare as choices and expect to
-// be told. The tunnel is a named Cloudflare one, which is what gives the
-// environment a stable domain — and a stable domain is the thing this service
-// polls, so it is not really optional.
+// Both projects declare domain as a choice — only the hostnames their tunnel is
+// configured for — so a domain is sent only when one is configured, and left
+// out otherwise so the workflow uses its own default. The address is then read
+// from the run log, which is how a deployment needs no domain at all.
 //
-// When the key is labs-managed the dispatch also carries it, so the environment
-// comes up configured with the key labs already holds and nothing has to be set
-// on the repository. That input is only added when the workflow declares it;
-// GitHub refuses a dispatch naming an input the workflow does not know.
+// The api_key input is applab's alone: its debugger workflow accepts one and
+// threads it into the environment (inputs.api_key || secrets.APPLAB_API_KEY), so
+// labs can choose the key and hand it over at dispatch. sandboxlab's workflow
+// takes no such input, so its key is configured out of band and never sent.
 func (e Env) DispatchInputs(sessionHours string) map[string]string {
 	out := map[string]string{
 		"session_hours": sessionHours,
 		"tunnel":        "cloudflare",
-		"domain":        e.Domain,
 	}
-	if e.ManagedKey && e.APIKey != "" {
+	if e.Domain != "" {
+		out["domain"] = e.Domain
+	}
+	if e.Kind == KindApplab && e.ManagedKey && e.APIKey != "" {
 		out["api_key"] = e.APIKey
 	}
 	return out

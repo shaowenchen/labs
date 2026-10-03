@@ -73,7 +73,7 @@ type Manager struct {
 	// a domain: it reads the address the environment printed in its own run log.
 	// Nil when no discovery is available, and it is consulted only for
 	// environments whose domain is empty.
-	discover func(ctx context.Context, env model.Env) (string, bool)
+	discover func(ctx context.Context, env model.Env) (string, string)
 
 	// start makes sure an environment is coming up, dispatching a run if none is
 	// active. It is what lets a request bring an environment up on a host with
@@ -112,8 +112,11 @@ func (m *Manager) WithClock(now func() time.Time) *Manager {
 }
 
 // WithDiscovery sets the function used to find an environment's address when it
-// was not configured with one.
-func (m *Manager) WithDiscovery(fn func(ctx context.Context, env model.Env) (string, bool)) *Manager {
+// was not configured with one. It returns the address, or an empty address and
+// a message saying why it could not be found — which is what the page shows, so
+// a discovery that fails on a real reason (a missing token, an unreadable log)
+// does not look like a cluster that is merely slow.
+func (m *Manager) WithDiscovery(fn func(ctx context.Context, env model.Env) (string, string)) *Manager {
 	m.discover = fn
 	return m
 }
@@ -181,7 +184,7 @@ func (m *Manager) provisionPass(ctx context.Context, kind model.Kind, clientIP s
 		// An environment whose address was discovered rather than configured is
 		// probed and provisioned at that address: the driver needs the same host
 		// the probe succeeded against.
-		if base, ok := m.baseURLFor(ctx, env); ok {
+		if base, _ := m.baseURLFor(ctx, env); base != "" {
 			if resolved, ok := envAt(env, base); ok {
 				env = resolved
 			}
@@ -434,9 +437,9 @@ func (m *Manager) envReady(ctx context.Context, drv driver.Driver, env model.Env
 
 	probe := env
 	if probe.Domain == "" {
-		base, ok := m.baseURLFor(ctx, env)
-		if !ok {
-			r := driver.Ready{Message: "the cluster is starting; its address has not been announced yet"}
+		base, why := m.baseURLFor(ctx, env)
+		if base == "" {
+			r := driver.Ready{Message: why}
 			m.remember(env.ID, r)
 			return r
 		}
@@ -484,12 +487,16 @@ func envAt(env model.Env, base string) (model.Env, bool) {
 // baseURLFor returns an environment's address, discovering it from the run log
 // when it was not configured. A discovered address is cached for the life of the
 // process; a configured one never needs this.
-func (m *Manager) baseURLFor(ctx context.Context, env model.Env) (string, bool) {
+//
+// The second return is a message for the page when there is no address yet —
+// why discovery could not find one, so a failure with a real cause does not look
+// like a cluster that is merely slow.
+func (m *Manager) baseURLFor(ctx context.Context, env model.Env) (string, string) {
 	if env.Domain != "" {
-		return env.BaseURL(), true
+		return env.BaseURL(), ""
 	}
 	if m.discover == nil {
-		return "", false
+		return "", "the cluster is starting; its address has not been announced yet"
 	}
 	return m.discover(ctx, env)
 }

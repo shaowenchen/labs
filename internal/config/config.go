@@ -372,14 +372,18 @@ func buildEnvs(repos []string, slots int, domainSuffix, ref string) []model.Env 
 			Scheme:   "https",
 			Domain:   domain,
 			BasePath: basePathFor(kind),
+			Template: strings.TrimSpace(os.Getenv("LABS_TEMPLATE_" + id)),
 			Slots:    slotNames(slots),
 			Capacity: slots,
 			APIKey:   strings.TrimSpace(os.Getenv("LABS_KEY_" + id)),
 		}
-		if env.APIKey == "" {
-			// Nothing was configured, so labs chooses a key and gives it to the
-			// environment in the dispatch. That is what lets a deployment run on
-			// a token and a repository list alone.
+		// applab accepts an api_key input, so a key labs generates can be handed
+		// to the environment at dispatch — which is what lets an applab
+		// deployment run on a token and a repository list alone. sandboxlab's
+		// workflow takes no such input, so its key must be configured; a
+		// generated one could never reach the environment, and validateEnv says
+		// so.
+		if env.APIKey == "" && env.Kind == model.KindApplab {
 			key, err := generateKey()
 			if err != nil {
 				// crypto/rand failing is not something to continue past: every
@@ -415,14 +419,9 @@ func kindFor(repo string) model.Kind {
 }
 
 // workflowFor is the workflow file a project's debugger environment is brought
-// up by. applab's is debugger.yml; sandboxlab's is sandboxlab.yml.
+// up by. Both projects name it debugger.yml.
 func workflowFor(kind model.Kind) string {
-	switch kind {
-	case model.KindSandboxlab:
-		return "sandboxlab.yml"
-	default:
-		return "debugger.yml"
-	}
+	return "debugger.yml"
 }
 
 // envID turns a repository name into an environment id, and the tail of the
