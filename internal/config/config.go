@@ -100,12 +100,14 @@ func Load() (Config, error) {
 	var cfg Config
 	var err error
 
-	setString(&cfg.Listen, "LABS_LISTEN", ":8080")
+	setString(&cfg.Listen, "LABS_LISTEN", "")
 	setString(&cfg.LogLevel, "LABS_LOG_LEVEL", "info")
 	setString(&cfg.GitHubToken, "LABS_GITHUB_TOKEN", "")
 	setString(&cfg.GitHubAPI, "LABS_GITHUB_API", "https://api.github.com")
 	setString(&cfg.DispatchRef, "LABS_DISPATCH_REF", "main")
 	setString(&cfg.DispatchSessionHours, "LABS_DISPATCH_SESSION_HOURS", "4")
+
+	cfg.Listen = resolveListen(cfg.Listen)
 
 	cfg.Repos = splitList(os.Getenv("LABS_REPOS"))
 
@@ -148,6 +150,25 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// resolveListen decides the address to bind.
+//
+// LABS_LISTEN wins when it is set, because it is the variable this service
+// documents and a deployment may want a specific interface. Failing that, PORT
+// is honoured, because that is what a container platform — Fly, Render,
+// Railway, Cloud Run, Heroku — injects and then probes to decide whether the
+// service came up; a process that ignores it looks like one that never started.
+// Failing that, :8080, which is the container's default and above the ports an
+// unprivileged user can bind.
+func resolveListen(labsListen string) string {
+	if labsListen != "" {
+		return labsListen
+	}
+	if port := strings.TrimSpace(os.Getenv("PORT")); port != "" {
+		return ":" + port
+	}
+	return ":8080"
 }
 
 // Validate rejects a configuration the service could not run under.

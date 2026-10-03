@@ -127,3 +127,32 @@ func TestKeyEnvSuffix(t *testing.T) {
 		}
 	}
 }
+
+func TestListenResolution(t *testing.T) {
+	// LABS_LISTEN wins; PORT is honoured when it is not set; otherwise :8080.
+	cases := []struct {
+		name string
+		labs string
+		port string
+		want string
+	}{
+		{"neither set", "", "", ":8080"},
+		{"PORT only", "", "9000", ":9000"},
+		{"LABS_LISTEN only", ":7777", "", ":7777"},
+		{"both set, LABS_LISTEN wins", ":7777", "9000", ":7777"},
+		{"blank PORT falls through", "", "  ", ":8080"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.labs != "" {
+				t.Setenv("LABS_LISTEN", tc.labs)
+			}
+			if tc.port != "" {
+				t.Setenv("PORT", tc.port)
+			}
+			if got := resolveListen(tc.labs); got != tc.want {
+				t.Errorf("resolveListen(%q) = %q, want %q", tc.labs, got, tc.want)
+			}
+		})
+	}
+}
