@@ -6,14 +6,16 @@
 // settings are readable from the pod spec — which is where someone debugging a
 // deployment looks first.
 //
-// The one thing that is not a scalar is the set of environments, which is
-// necessarily a list. It is JSON in LABS_ENVIRONMENTS, with each environment's
-// secret in its own LABS_KEY_<ID> variable, so the JSON can be logged at
-// startup without ever printing a key.
+// There is no environment list to write out. One entry in LABS_REPOS is one
+// environment, and everything a repository implies — which project it runs, the
+// path it is served under, the workflow that brings it up — is derived from its
+// name. The only two things that cannot be derived are the domain it is served
+// under and the key it is configured with, and those are one variable each:
+// LABS_DOMAIN_<ID> and LABS_KEY_<ID>, where <ID> is the repository name
+// uppercased.
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"strconv"
@@ -87,11 +89,15 @@ type Config struct {
 	TrustedProxy bool
 
 	// Repos is the allow-list of repositories workflows may be dispatched in,
-	// as "owner/repo". An environment naming a repository outside it is refused
-	// at load.
+	// as "owner/repo". It is also the environment list: one repository is one
+	// environment.
 	Repos []string
 
-	// Envs are the environments, each with its key resolved.
+	// EnvSlots is how many concurrent sessions each environment serves, which
+	// is the number of app ids it lends out. It applies to every environment.
+	EnvSlots int
+
+	// Envs are the environments, one per repository, each with its key resolved.
 	Envs []model.Env
 
 	// Problems are the configuration mistakes found while loading: a variable
@@ -127,8 +133,6 @@ func Load() (Config, error) {
 
 	cfg.Listen = resolveListen(cfg.Listen)
 
-	cfg.Repos = splitList(os.Getenv("LABS_REPOS"))
-
 	// These four are the only unreadable values: the variable is set to
 	// something that is not a duration or a number. A typo in one of them is
 	// still a reason to stop, because continuing would silently substitute the
@@ -157,6 +161,9 @@ func Load() (Config, error) {
 	if cfg.RateLimitCount, err = intEnv("LABS_RATE_LIMIT_COUNT", 5); err != nil {
 		return Config{}, err
 	}
+	if cfg.EnvSlots, err = intEnv("LABS_ENV_SLOTS", defaultEnvSlots); err != nil {
+		return Config{}, err
+	}
 	if cfg.KeepWarm, err = boolEnv("LABS_KEEPWARM", true); err != nil {
 		return Config{}, err
 	}
@@ -164,13 +171,8 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
-	if cfg.Envs, err = parseEnvs(os.Getenv("LABS_ENVIRONMENTS")); err != nil {
-		// Malformed JSON is a problem, not a reason to stop: the rest of the
-		// configuration may be perfectly usable, and the message says which
-		// variable to fix.
-		cfg.Envs = nil
-		cfg.Problems = append(cfg.Problems, err.Error())
-	}
+	cfg.Repos = splitList(os.Getenv("LABS_REPOS"))
+	cfg.Envs = buildEnvs(cfg.Repos, cfg.EnvSlots)
 
 	cfg.Problems = append(cfg.Problems, cfg.Validate()...)
 	return cfg, nil
@@ -231,30 +233,21 @@ func (c Config) Validate() []string {
 	if !validSessionHours(c.DispatchSessionHours) {
 		add("LABS_DISPATCH_SESSION_HOURS is %q, but the workflow declares it as a choice of 1, 2, 4 or unlimited", c.DispatchSessionHours)
 	}
-	if len(c.Envs) == 0 && !hasProblemPrefix(problems, "LABS_ENVIRONMENTS") {
-		add("LABS_ENVIRONMENTS is not set: a JSON array describing at least one environment")
+	if c.EnvSlots <= 0 {
+		add("LABS_ENV_SLOTS is %d, but each environment needs at least one slot", c.EnvSlots)
 	}
 
-	seen := make(map[string]bool, len(c.Envs))
+	// Ids come from repository names, so two repositories with the same name
+	// under different owners would collide. It is unlikely and cheap to catch.
+	seen := make(map[string]string, len(c.Envs))
 	for _, e := range c.Envs {
 		problems = append(problems, c.validateEnv(e)...)
-		if seen[e.ID] {
-			add("LABS_ENVIRONMENTS names %q twice", e.ID)
+		if prev, dup := seen[e.ID]; dup {
+			add("repositories %q and %q have the same name, so their environments collide on %s", prev, e.Repo, e.ID)
 		}
-		seen[e.ID] = true
+		seen[e.ID] = e.Repo
 	}
 	return problems
-}
-
-// hasProblemPrefix reports whether a problem already mentions the variable, so
-// a malformed value is not also reported as a missing one.
-func hasProblemPrefix(problems []string, prefix string) bool {
-	for _, p := range problems {
-		if strings.HasPrefix(p, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 func (c Config) validateEnv(e model.Env) []string {
@@ -262,40 +255,27 @@ func (c Config) validateEnv(e model.Env) []string {
 	add := func(format string, args ...any) { problems = append(problems, fmt.Sprintf(format, args...)) }
 
 	switch {
-	case e.ID == "":
-		add("LABS_ENVIRONMENTS has an environment with no id")
-		return problems
-	case !e.Kind.Known():
-		add("LABS_ENVIRONMENTS entry %q has kind %q, which is not applab or sandboxlab", e.ID, e.Kind)
-		return problems
-	case e.Repo == "":
-		add("LABS_ENVIRONMENTS entry %q names no repo", e.ID)
-	case !contains(c.Repos, e.Repo):
-		add("LABS_ENVIRONMENTS entry %q dispatches in %q, which is not in LABS_REPOS", e.ID, e.Repo)
 	case e.Workflow == "":
-		add("LABS_ENVIRONMENTS entry %q names no workflow", e.ID)
+		add("environment %q names no workflow", e.ID)
 	case e.Ref == "":
-		add("LABS_ENVIRONMENTS entry %q names no ref", e.ID)
-	case !validHost(e.Domain):
-		add("LABS_ENVIRONMENTS entry %q has domain %q, which must be a bare hostname with no scheme or path", e.ID, e.Domain)
+		add("environment %q names no ref", e.ID)
 	case !validBasePath(e.BasePath):
-		add("LABS_ENVIRONMENTS entry %q has base_path %q, which must be empty or start with / and not end with one", e.ID, e.BasePath)
+		add("environment %q has base_path %q, which must be empty or start with / and not end with one", e.ID, e.BasePath)
+	case e.Domain == "":
+		add("environment %q has no domain: set LABS_DOMAIN_%s to the hostname it is served under", e.ID, e.ID)
+	case !validHost(e.Domain):
+		add("environment %q has domain %q, which must be a bare hostname with no scheme or path", e.ID, e.Domain)
 	case e.APIKey == "":
-		add("environment %q has no key: set LABS_KEY_%s to the key that environment is configured with", e.ID, keyEnvSuffix(e.ID))
+		add("environment %q has no key: set LABS_KEY_%s to the key that environment is configured with", e.ID, e.ID)
 	case e.Capacity <= 0:
-		add("LABS_ENVIRONMENTS entry %q has capacity %d, which must be positive", e.ID, e.Capacity)
+		add("environment %q has capacity %d, which must be positive", e.ID, e.Capacity)
 	}
 
-	switch e.Kind {
-	case model.KindApplab:
+	if e.Kind == model.KindApplab {
 		if len(e.Slots) == 0 {
-			add("LABS_ENVIRONMENTS entry %q is an applab environment with no slots: it needs one app id per concurrent session", e.ID)
+			add("environment %q is an applab environment with no slots: set LABS_ENV_SLOTS to at least 1", e.ID)
 		} else if e.Capacity != len(e.Slots) {
-			add("LABS_ENVIRONMENTS entry %q has capacity %d but %d slots; for applab they are the same number", e.ID, e.Capacity, len(e.Slots))
-		}
-	case model.KindSandboxlab:
-		if e.Template == "" {
-			add("LABS_ENVIRONMENTS entry %q is a sandboxlab environment with no template", e.ID)
+			add("environment %q has capacity %d but %d slots; for applab they are the same number", e.ID, e.Capacity, len(e.Slots))
 		}
 	}
 	return problems
@@ -329,32 +309,94 @@ func (c Config) EnvByID(id string) (model.Env, bool) {
 	return model.Env{}, false
 }
 
-// parseEnvs reads LABS_ENVIRONMENTS and attaches each environment's key from
-// its own LABS_KEY_<ID> variable.
-//
-// The split is the point: the JSON holds only what is safe to log, and the
-// secret is read from a variable named for the environment so a key can be
-// rotated without editing the JSON.
-func parseEnvs(raw string) ([]model.Env, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil, nil
+// defaultEnvSlots is how many concurrent sessions each environment serves when
+// LABS_ENV_SLOTS does not say. Four app slots is a small shared environment's
+// worth, and each one costs a running app in the cluster.
+const defaultEnvSlots = 4
+
+// basePathFor is the path a project's whole deployment is served under. It is a
+// function of the project, not a setting: applab is served under /applab and
+// sandboxlab under /sandbox, and a deployment that changed it in only one of
+// the two places — here and the chart — would poll an address nothing answers.
+func basePathFor(kind model.Kind) string {
+	switch kind {
+	case model.KindApplab:
+		return "/applab"
+	case model.KindSandboxlab:
+		return "/sandbox"
+	default:
+		return ""
 	}
-	var envs []model.Env
-	if err := json.Unmarshal([]byte(raw), &envs); err != nil {
-		return nil, fmt.Errorf("LABS_ENVIRONMENTS is not valid JSON: %w", err)
-	}
-	for i := range envs {
-		envs[i].APIKey = strings.TrimSpace(os.Getenv("LABS_KEY_" + keyEnvSuffix(envs[i].ID)))
-	}
-	return envs, nil
 }
 
-// keyEnvSuffix turns an environment id into the tail of its key variable:
-// "applab-1" becomes "APPLAB_1", so the variable is LABS_KEY_APPLAB_1.
-func keyEnvSuffix(id string) string {
+// buildEnvs turns the repository list into the environments this deployment
+// runs: one repository is one environment.
+//
+// Everything a repository implies is derived from its name — which project it
+// is from the owner, the served path from the project, the workflow file from
+// the two debugger conventions — so the only two things that have to be
+// configured are the two that cannot be guessed: the domain the environment is
+// served under (LABS_DOMAIN_<ID>) and the key it is configured with
+// (LABS_KEY_<ID>), where <ID> is the repository name uppercased.
+func buildEnvs(repos []string, slots int) []model.Env {
+	envs := make([]model.Env, 0, len(repos))
+	for _, repo := range repos {
+		kind := kindFor(repo)
+		id := envID(repoName(repo))
+		envs = append(envs, model.Env{
+			ID:       id,
+			Kind:     kind,
+			Repo:     repo,
+			Workflow: workflowFor(kind),
+			Ref:      "main",
+			Scheme:   "https",
+			Domain:   strings.TrimSpace(os.Getenv("LABS_DOMAIN_" + id)),
+			BasePath: basePathFor(kind),
+			Slots:    slotNames(slots),
+			Capacity: slots,
+			APIKey:   strings.TrimSpace(os.Getenv("LABS_KEY_" + id)),
+		})
+	}
+	return envs
+}
+
+// repoName is the part of "owner/name" after the slash, or the whole entry when
+// there is no slash.
+func repoName(repo string) string {
+	if i := strings.LastIndex(repo, "/"); i >= 0 {
+		return repo[i+1:]
+	}
+	return repo
+}
+
+// kindFor names the project a repository belongs to, from its name: the two
+// debugger environments this service drives are named applab and sandboxlab.
+// A repository named neither is treated as applab, which is the kind that is
+// implemented; the mismatch shows up as a domain that never answers.
+func kindFor(repo string) model.Kind {
+	if strings.Contains(strings.ToLower(repoName(repo)), "sandbox") {
+		return model.KindSandboxlab
+	}
+	return model.KindApplab
+}
+
+// workflowFor is the workflow file a project's debugger environment is brought
+// up by. applab's is debugger.yml; sandboxlab's is sandboxlab.yml.
+func workflowFor(kind model.Kind) string {
+	switch kind {
+	case model.KindSandboxlab:
+		return "sandboxlab.yml"
+	default:
+		return "debugger.yml"
+	}
+}
+
+// envID turns a repository name into an environment id, and the tail of the
+// variables named for it: "applab" becomes "APPLAB", so the variables are
+// LABS_DOMAIN_APPLAB and LABS_KEY_APPLAB.
+func envID(name string) string {
 	var b strings.Builder
-	for _, r := range strings.ToUpper(id) {
+	for _, r := range strings.ToUpper(name) {
 		switch {
 		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
 			b.WriteRune(r)
@@ -365,13 +407,16 @@ func keyEnvSuffix(id string) string {
 	return b.String()
 }
 
-func contains(list []string, want string) bool {
-	for _, v := range list {
-		if v == want {
-			return true
-		}
+// slotNames is the app ids an environment lends out: lab-01, lab-02, ...
+func slotNames(n int) []string {
+	if n < 0 {
+		n = 0
 	}
-	return false
+	out := make([]string, 0, n)
+	for i := 1; i <= n; i++ {
+		out = append(out, fmt.Sprintf("lab-%02d", i))
+	}
+	return out
 }
 
 func validSessionHours(v string) bool {

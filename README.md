@@ -156,8 +156,8 @@ concurrency:
   group: applab-debugger-${{ github.repository }}-${{ inputs.domain }}
 ```
 
-With that, configure `applab-1` and `applab-2` on different domains and the
-keeper holds them in antiphase.
+With that, configure two repositories' worth of environments on different
+domains and the keeper holds them in antiphase.
 
 ## What you have to do in the other repositories
 
@@ -165,7 +165,7 @@ labs changes nothing in applab or sandboxlab. What it needs from them is
 configuration, and one small edit:
 
 **applab — a secret, no file change.** Set the repository secret
-`APPLAB_API_KEY` to a fixed value and put the same value in `LABS_KEY_APPLAB_1`.
+`APPLAB_API_KEY` to a fixed value and put the same value in `LABS_KEY_APPLAB`.
 The existing `debugger.yml` already reads it (`inputs.api_key ||
 secrets.APPLAB_API_KEY`), so an environment started without an `api_key` input
 uses it — and labs never sends one, so the value does not appear in a dispatch
@@ -184,6 +184,23 @@ reason applab came first.
 
 See [`.env.example`](.env.example) for every variable and what it is for.
 Everything is an environment variable; there is no config file.
+
+**There is no environment list to write.** One entry in `LABS_REPOS` is one
+environment, and everything a repository implies — the project (`applab` or
+`sandboxlab`, from the name), the served path (`/applab`, `/sandbox`), the
+workflow that brings it up — is derived from it. Only two things cannot be
+derived, so there is one variable for each, named for the repository with its
+name uppercased:
+
+```bash
+LABS_GITHUB_TOKEN=...          # Actions: read and write on the repositories below
+LABS_REPOS=shaowenchen/applab  # one entry = one environment
+LABS_DOMAIN_APPLAB=applab-1.example.com
+LABS_KEY_APPLAB=<the environment's key>
+```
+
+Add a second repository and it needs its own pair: `shaowenchen/sandboxlab`
+would want `LABS_DOMAIN_SANDBOXLAB` and `LABS_KEY_SANDBOXLAB`.
 
 **A missing variable does not stop the service.** It starts, answers `/healthz`,
 and reports what is wrong through its log, `/readyz` and `GET /api/v1/config` —
@@ -204,9 +221,9 @@ Two things are worth knowing at the top:
   should it), so labs cannot discover it — it is the same value in the
   repository secret and in `LABS_KEY_<ID>`.
 - **The domain must be stable.** labs finds an environment by polling
-  `GET <domain><base_path>/api/v1/config`, which works because a *named*
-  Cloudflare tunnel keeps its hostname across runs. A quick tunnel would give a
-  new address each run and labs would never find it.
+  `GET <domain><path>/api/v1/config`, which only works if the hostname is the
+  same across runs. That is what a *named* Cloudflare tunnel gives; a quick
+  tunnel is assigned a new hostname each run and labs would never find it.
 
 ## Running it
 

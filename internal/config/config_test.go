@@ -6,15 +6,15 @@ import (
 	"time"
 )
 
-// setEnv sets the variables a valid configuration needs, so a test only has to
-// override the one it is about.
+// setEnv sets the variables a valid single-applab-repo configuration needs, so
+// a test only has to override the one it is about.
 func setEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
 	base := map[string]string{
-		"LABS_GITHUB_TOKEN": "token",
-		"LABS_REPOS":        "o/applab,o/sandboxlab",
-		"LABS_ENVIRONMENTS": `[{"id":"applab-1","kind":"applab","repo":"o/applab","workflow":"debugger.yml","ref":"main","domain":"a.example.com","base_path":"/applab","slots":["lab-01"],"capacity":1}]`,
-		"LABS_KEY_APPLAB_1": "admin-key",
+		"LABS_GITHUB_TOKEN":  "token",
+		"LABS_REPOS":         "o/applab",
+		"LABS_DOMAIN_APPLAB": "applab.example.com",
+		"LABS_KEY_APPLAB":    "admin-key",
 	}
 	for k, v := range override(base, overrides) {
 		t.Setenv(k, v)
@@ -36,41 +36,163 @@ func override(base, over map[string]string) map[string]string {
 	return out
 }
 
-func TestLoadResolvesTheDefaults(t *testing.T) {
-	setEnv(t, nil)
+func mustLoad(t *testing.T) Config {
+	t.Helper()
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.SessionTTL != 2*time.Hour {
-		t.Errorf("SessionTTL = %s, want 2h", cfg.SessionTTL)
+	return cfg
+}
+
+func hasProblem(problems []string, substr string) bool {
+	for _, p := range problems {
+		if strings.Contains(p, substr) {
+			return true
+		}
 	}
-	if !cfg.KeepWarm {
-		t.Error("KeepWarm should default on")
+	return false
+}
+
+// One repository is one environment, and everything a repository implies is
+// derived from its name.
+func TestRepositoryBecomesAnEnvironment(t *testing.T) {
+	setEnv(t, nil)
+	cfg := mustLoad(t)
+
+	if !cfg.Usable() {
+		t.Fatalf("a minimal configuration should be usable, problems: %v", cfg.Problems)
 	}
-	if len(cfg.Envs) != 1 || cfg.Envs[0].APIKey != "admin-key" {
-		t.Fatalf("the environment or its key did not load: %+v", cfg.Envs)
+	if len(cfg.Envs) != 1 {
+		t.Fatalf("want one environment from one repository, got %d", len(cfg.Envs))
 	}
-	if cfg.SessionCeiling() != 1 {
-		t.Errorf("SessionCeiling = %d, want the environment's capacity", cfg.SessionCeiling())
+	e := cfg.Envs[0]
+	if e.ID != "APPLAB" {
+		t.Errorf("id = %q, want APPLAB", e.ID)
+	}
+	if e.Kind != "applab" {
+		t.Errorf("kind = %q, want applab", e.Kind)
+	}
+	if e.Repo != "o/applab" {
+		t.Errorf("repo = %q", e.Repo)
+	}
+	if e.Workflow != "debugger.yml" {
+		t.Errorf("workflow = %q, want debugger.yml", e.Workflow)
+	}
+	if e.Ref != "main" {
+		t.Errorf("ref = %q, want main", e.Ref)
+	}
+	if e.BasePath != "/applab" {
+		t.Errorf("base_path = %q, want /applab", e.BasePath)
+	}
+	if e.Domain != "applab.example.com" {
+		t.Errorf("domain = %q, want the LABS_DOMAIN_APPLAB value", e.Domain)
+	}
+	if e.APIKey != "admin-key" {
+		t.Errorf("api key = %q, want the LABS_KEY_APPLAB value", e.APIKey)
+	}
+	if e.Capacity != defaultEnvSlots || len(e.Slots) != defaultEnvSlots {
+		t.Errorf("capacity = %d, slots = %d, want %d of each", e.Capacity, len(e.Slots), defaultEnvSlots)
+	}
+	if e.Capacity != len(e.Slots) {
+		t.Errorf("capacity %d and slots %d must match for applab", e.Capacity, len(e.Slots))
+	}
+}
+
+func TestSandboxlabRepositoryIsRecognised(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_REPOS":             "o/sandboxlab",
+		"LABS_DOMAIN_SANDBOXLAB": "sb.example.com",
+		"LABS_KEY_SANDBOXLAB":    "sb-key",
+	})
+	cfg := mustLoad(t)
+	if len(cfg.Envs) != 1 {
+		t.Fatalf("want one environment, got %d", len(cfg.Envs))
+	}
+	e := cfg.Envs[0]
+	if e.Kind != "sandboxlab" {
+		t.Errorf("kind = %q, want sandboxlab", e.Kind)
+	}
+	if e.ID != "SANDBOXLAB" {
+		t.Errorf("id = %q, want SANDBOXLAB", e.ID)
+	}
+	if e.BasePath != "/sandbox" {
+		t.Errorf("base_path = %q, want /sandbox", e.BasePath)
+	}
+	if e.Workflow != "sandboxlab.yml" {
+		t.Errorf("workflow = %q, want sandboxlab.yml", e.Workflow)
+	}
+}
+
+func TestSeveralRepositoriesBecomeSeveralEnvironments(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_REPOS":             "o/applab,o/sandboxlab",
+		"LABS_DOMAIN_SANDBOXLAB": "sb.example.com",
+		"LABS_KEY_SANDBOXLAB":    "sb-key",
+	})
+	cfg := mustLoad(t)
+	if len(cfg.Envs) != 2 {
+		t.Fatalf("want two environments, got %d", len(cfg.Envs))
+	}
+	if cfg.TotalCapacity() != 2*defaultEnvSlots {
+		t.Errorf("TotalCapacity = %d, want %d", cfg.TotalCapacity(), 2*defaultEnvSlots)
+	}
+}
+
+func TestDispatchInputsCarryTheDomain(t *testing.T) {
+	setEnv(t, nil)
+	e := mustLoad(t).Envs[0]
+	inputs := e.DispatchInputs("4")
+	if inputs["domain"] != "applab.example.com" {
+		t.Errorf("dispatch domain = %q", inputs["domain"])
+	}
+	if inputs["session_hours"] != "4" {
+		t.Errorf("dispatch session_hours = %q", inputs["session_hours"])
+	}
+	if inputs["tunnel"] != "cloudflare" {
+		t.Errorf("dispatch tunnel = %q, want cloudflare", inputs["tunnel"])
+	}
+}
+
+func TestLabSlots(t *testing.T) {
+	cases := map[int][]string{
+		0: nil,
+		1: {"lab-01"},
+		4: {"lab-01", "lab-02", "lab-03", "lab-04"},
+	}
+	for n, want := range cases {
+		got := slotNames(n)
+		if len(got) != len(want) {
+			t.Fatalf("slotNames(%d) = %v, want %v", n, got, want)
+		}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Errorf("slotNames(%d)[%d] = %q, want %q", n, i, got[i], want[i])
+			}
+		}
+	}
+}
+
+func TestEnvID(t *testing.T) {
+	cases := map[string]string{"applab": "APPLAB", "sandboxlab": "SANDBOXLAB", "my-app": "MY_APP", "A.b": "A_B"}
+	for in, want := range cases {
+		if got := envID(in); got != want {
+			t.Errorf("envID(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 
 // The point of the loader's design: an empty environment is not an error. The
 // service starts and says what is missing.
 func TestLoadWithNothingSetStillReturnsAConfig(t *testing.T) {
-	// Clear anything the ambient environment might have.
-	for _, k := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS", "LABS_ENVIRONMENTS", "LABS_KEY_APPLAB_1", "LABS_LISTEN"} {
+	for _, k := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS", "LABS_LISTEN"} {
 		t.Setenv(k, "")
 	}
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load returned an error for an empty environment: %v", err)
-	}
+	cfg := mustLoad(t)
 	if cfg.Usable() {
 		t.Fatal("a configuration with nothing set reported itself usable")
 	}
-	for _, want := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS", "LABS_ENVIRONMENTS"} {
+	for _, want := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS"} {
 		if !hasProblem(cfg.Problems, want) {
 			t.Errorf("problems do not mention %s: %v", want, cfg.Problems)
 		}
@@ -98,19 +220,27 @@ func TestMissingTokenIsAProblem(t *testing.T) {
 	}
 }
 
-func TestMissingKeyPerEnvironmentIsAProblem(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_KEY_APPLAB_1": ""})
+func TestMissingRepoIsAProblem(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_REPOS": ""})
 	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_KEY_APPLAB_1") {
-		t.Fatalf("want a problem naming the missing key variable, got %v", cfg.Problems)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_REPOS") {
+		t.Fatalf("want a problem naming LABS_REPOS, got %v", cfg.Problems)
 	}
 }
 
-func TestEnvironmentOutsideReposIsAProblem(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_REPOS": "o/other"})
+func TestMissingKeyPerEnvironmentIsAProblem(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_KEY_APPLAB": ""})
 	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_REPOS") {
-		t.Fatalf("want a problem about the repo not being allowed, got %v", cfg.Problems)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_KEY_APPLAB") {
+		t.Fatalf("want a problem naming LABS_KEY_APPLAB, got %v", cfg.Problems)
+	}
+}
+
+func TestMissingDomainIsAProblem(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_DOMAIN_APPLAB": ""})
+	cfg := mustLoad(t)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_DOMAIN_APPLAB") {
+		t.Fatalf("want a problem naming LABS_DOMAIN_APPLAB, got %v", cfg.Problems)
 	}
 }
 
@@ -122,86 +252,50 @@ func TestInvalidSessionHoursIsAProblem(t *testing.T) {
 	}
 }
 
-func TestApplabWithoutSlotsIsAProblem(t *testing.T) {
-	setEnv(t, map[string]string{
-		"LABS_ENVIRONMENTS": `[{"id":"applab-1","kind":"applab","repo":"o/applab","workflow":"debugger.yml","ref":"main","domain":"a.example.com","capacity":1}]`,
-	})
+func TestZeroSlotsIsAProblem(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_ENV_SLOTS": "0"})
 	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "slots") {
-		t.Fatalf("want a problem about missing slots, got %v", cfg.Problems)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_ENV_SLOTS") {
+		t.Fatalf("want a problem about the slot count, got %v", cfg.Problems)
 	}
 }
 
 func TestBadDomainIsAProblem(t *testing.T) {
-	setEnv(t, map[string]string{
-		"LABS_ENVIRONMENTS": `[{"id":"applab-1","kind":"applab","repo":"o/applab","workflow":"debugger.yml","ref":"main","domain":"https://a.example.com","base_path":"/applab","slots":["lab-01"],"capacity":1}]`,
-	})
+	setEnv(t, map[string]string{"LABS_DOMAIN_APPLAB": "https://a.example.com"})
 	cfg := mustLoad(t)
 	if cfg.Usable() || !hasProblem(cfg.Problems, "domain") {
 		t.Fatalf("want a problem about the domain shape, got %v", cfg.Problems)
 	}
 }
 
-func TestMalformedEnvironmentsJSONIsAProblem(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_ENVIRONMENTS": `{not an array}`})
-	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_ENVIRONMENTS") {
-		t.Fatalf("want a problem about the JSON, got %v", cfg.Problems)
-	}
-}
-
 // Every problem is reported at once, so one restart shows everything to fix
 // rather than one thing per attempt.
 func TestAllProblemsAreReportedTogether(t *testing.T) {
-	for _, k := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS", "LABS_ENVIRONMENTS"} {
+	for _, k := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS"} {
 		t.Setenv(k, "")
 	}
 	cfg := mustLoad(t)
-	if len(cfg.Problems) < 3 {
+	if len(cfg.Problems) < 2 {
 		t.Fatalf("want the missing variables reported together, got %v", cfg.Problems)
 	}
 }
 
-func mustLoad(t *testing.T) Config {
-	t.Helper()
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+func TestEnvSlotsOverride(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_ENV_SLOTS": "2"})
+	cfg := mustLoad(t)
+	if cfg.Envs[0].Capacity != 2 || len(cfg.Envs[0].Slots) != 2 {
+		t.Fatalf("LABS_ENV_SLOTS=2 gave capacity %d and %d slots", cfg.Envs[0].Capacity, len(cfg.Envs[0].Slots))
 	}
-	return cfg
-}
-
-func hasProblem(problems []string, substr string) bool {
-	for _, p := range problems {
-		if strings.Contains(p, substr) {
-			return true
-		}
-	}
-	return false
 }
 
 func TestSessionCeilingPrefersTheConfiguredValue(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_MAX_SESSIONS": "7"})
-	cfg, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.SessionCeiling() != 7 {
-		t.Errorf("SessionCeiling = %d, want the configured 7", cfg.SessionCeiling())
-	}
-}
-
-func TestKeyEnvSuffix(t *testing.T) {
-	cases := map[string]string{"applab-1": "APPLAB_1", "sandbox-2": "SANDBOX_2", "A.b-c": "A_B_C"}
-	for in, want := range cases {
-		if got := keyEnvSuffix(in); got != want {
-			t.Errorf("keyEnvSuffix(%q) = %q, want %q", in, got, want)
-		}
+	if got := mustLoad(t).SessionCeiling(); got != 7 {
+		t.Errorf("SessionCeiling = %d, want the configured 7", got)
 	}
 }
 
 func TestListenResolution(t *testing.T) {
-	// LABS_LISTEN wins; PORT is honoured when it is not set; otherwise :8080.
 	cases := []struct {
 		name string
 		labs string
@@ -226,5 +320,12 @@ func TestListenResolution(t *testing.T) {
 				t.Errorf("resolveListen(%q) = %q, want %q", tc.labs, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestSessionTTLDefault(t *testing.T) {
+	setEnv(t, nil)
+	if got := mustLoad(t).SessionTTL; got != 2*time.Hour {
+		t.Errorf("SessionTTL = %s, want 2h", got)
 	}
 }

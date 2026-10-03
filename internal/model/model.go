@@ -72,11 +72,6 @@ type Env struct {
 	// applab it should equal len(Slots); it is authoritative for sandboxlab.
 	Capacity int `json:"capacity"`
 
-	// Inputs are extra workflow_dispatch inputs, merged over the defaults
-	// DispatchInputs builds. They let a deployment name its tunnel or any other
-	// input a given workflow declares, without this service knowing it.
-	Inputs map[string]string `json:"inputs,omitempty"`
-
 	// APIKey is the environment's own key, which labs holds in order to mint
 	// per-session credentials. It is never serialised — a log line or a
 	// /config response must not carry it — and it comes from a dedicated
@@ -84,23 +79,19 @@ type Env struct {
 	APIKey string `json:"-"`
 }
 
-// DispatchInputs is the workflow_dispatch input map for this environment:
-// the session length, a named tunnel, and this environment's own domain, with
-// any per-environment overrides on top.
+// DispatchInputs is the workflow_dispatch input map for this environment: the
+// session length, a named tunnel, and this environment's own domain.
 //
 // The defaults are what the debugger workflows declare as choices and expect to
-// be told: a run without a domain would serve a random hostname, and this
-// service can only poll an address it already knows.
+// be told. The tunnel is a named Cloudflare one, which is what gives the
+// environment a stable domain — and a stable domain is the thing this service
+// polls, so it is not really optional.
 func (e Env) DispatchInputs(sessionHours string) map[string]string {
-	out := map[string]string{
+	return map[string]string{
 		"session_hours": sessionHours,
 		"tunnel":        "cloudflare",
 		"domain":        e.Domain,
 	}
-	for k, v := range e.Inputs {
-		out[k] = v
-	}
-	return out
 }
 
 // BaseURL is the environment's root address: scheme, host and base path.
