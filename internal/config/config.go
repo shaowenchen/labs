@@ -275,6 +275,9 @@ func (c Config) validateEnv(e model.Env) []string {
 	case e.Domain != "" && !validHost(e.Domain):
 		add("environment %q has domain %q, which must be a bare hostname with no scheme or path (or leave it out and let the address be read from the environment's own run log)", e.ID, e.Domain)
 	case e.APIKey == "":
+		// Unreachable while buildEnvs generates one for every kind — kept as a
+		// guard, since a future kind whose workflow takes no api_key input would
+		// land here and needs to be a problem rather than a blank credential.
 		add("environment %q has no key: set LABS_KEY_%s to the key that environment is configured with", e.ID, e.ID)
 	case e.Capacity <= 0:
 		add("environment %q has capacity %d, which must be positive", e.ID, e.Capacity)
@@ -392,13 +395,14 @@ func buildEnvs(repos []string, slots int, domainSuffix, ref string) []model.Env 
 			Capacity: slots,
 			APIKey:   strings.TrimSpace(os.Getenv("LABS_KEY_" + id)),
 		}
-		// applab accepts an api_key input, so a key labs generates can be handed
-		// to the environment at dispatch — which is what lets an applab
-		// deployment run on a token and a repository list alone. sandboxlab's
-		// workflow takes no such input, so its key must be configured; a
-		// generated one could never reach the environment, and validateEnv says
-		// so.
-		if env.APIKey == "" && env.Kind == model.KindApplab {
+		// A key is generated when none is configured, for either kind: both
+		// projects' actions accept an api_key input, so labs can choose the key
+		// and hand it over at dispatch rather than requiring the two sides to be
+		// configured with the same value. applab's debugger workflow already
+		// declares it; sandboxlab's needs one line changed to (see the README),
+		// and until then GitHub rejects the dispatch — so a key set in
+		// LABS_KEY_SANDBOXLAB is what to use for that repository.
+		if env.APIKey == "" {
 			key, err := generateKey()
 			if err != nil {
 				// crypto/rand failing is not something to continue past: every

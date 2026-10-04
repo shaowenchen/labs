@@ -378,20 +378,29 @@ func TestSessionTTLDefault(t *testing.T) {
 	}
 }
 
-// A sandboxlab repository gets its kind, path, and template; its key must be
-// configured because its workflow cannot be handed one.
-func TestSandboxlabNeedsAConfiguredKey(t *testing.T) {
+// A sandboxlab repository gets its kind, path, and template, and — like applab
+// — a key generated for it when none is configured, which is then handed to the
+// environment in the dispatch. That is what lets both kinds be configured the
+// same way: a token and a repository list.
+func TestSandboxlabGetsAGeneratedKey(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_REPOS":               "o/sandboxlab",
 		"LABS_DOMAIN_SANDBOXLAB":   "sandboxlab-1.example.com",
 		"LABS_TEMPLATE_SANDBOXLAB": "all-in-one",
 	})
 	cfg := mustLoad(t)
-	if cfg.Usable() {
-		t.Fatal("a sandboxlab environment with no key should not be usable: its workflow cannot be handed a generated one")
+	if !cfg.Usable() {
+		t.Fatalf("a sandboxlab environment with no key should be usable, problems: %v", cfg.Problems)
 	}
-	if !hasProblem(cfg.Problems, "LABS_KEY_SANDBOXLAB") {
-		t.Fatalf("want a problem naming LABS_KEY_SANDBOXLAB, got %v", cfg.Problems)
+	e := cfg.Envs[0]
+	if e.APIKey == "" || !e.ManagedKey {
+		t.Fatalf("want a generated managed key, got %+v", e)
+	}
+	if got := e.DispatchInputs("4")["api_key"]; got != e.APIKey {
+		t.Errorf("dispatch api_key = %q, want the generated key", got)
+	}
+	if len(e.APIKey) != 32 {
+		t.Errorf("generated key is %d characters, want 32", len(e.APIKey))
 	}
 }
 
@@ -418,17 +427,17 @@ func TestSandboxlabWithAKeyIsUsable(t *testing.T) {
 	}
 }
 
-// A sandboxlab dispatch must not carry api_key — its workflow declares no such
-// input and GitHub rejects an unknown one.
-func TestSandboxlabDispatchCarriesNoAPIKey(t *testing.T) {
+// A sandboxlab dispatch carries the generated key, exactly as applab's does, so
+// the environment comes up holding the key labs will hand out.
+func TestSandboxlabDispatchCarriesTheGeneratedKey(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_REPOS":             "o/sandboxlab",
 		"LABS_DOMAIN_SANDBOXLAB": "sandboxlab-1.example.com",
-		"LABS_KEY_SANDBOXLAB":    "sb-key",
 	})
-	inputs := mustLoad(t).Envs[0].DispatchInputs("4")
-	if _, ok := inputs["api_key"]; ok {
-		t.Fatalf("sandboxlab dispatch carried api_key: %v", inputs)
+	e := mustLoad(t).Envs[0]
+	inputs := e.DispatchInputs("4")
+	if inputs["api_key"] != e.APIKey {
+		t.Errorf("dispatch api_key = %q, want the generated key", inputs["api_key"])
 	}
 	if inputs["domain"] != "sandboxlab-1.example.com" {
 		t.Errorf("domain = %v, want the configured one", inputs["domain"])

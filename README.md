@@ -172,36 +172,63 @@ domains and the keeper holds them in antiphase.
 
 ## What you have to do in the other repositories
 
-**applab — nothing, if labs generates the key.** labs dispatches `debugger.yml`
-with the key it generated as the `api_key` input. applab's workflow already
-threads that through (`inputs.api_key || secrets.APPLAB_API_KEY`), so the
-environment comes up configured with the key labs holds, and there is no secret
-to set. The only other thing the environment needs is the tunnel credential it
-already uses — `CLOUDFLARE_TOKEN` — and a named tunnel whose hostname matches
-the domain you configured here.
+**applab — nothing.** labs dispatches `debugger.yml` with the key it generated
+as the `api_key` input. applab's workflow already threads that through
+(`inputs.api_key || secrets.APPLAB_API_KEY`), so the environment comes up
+configured with the key labs holds, and there is no secret to set. The only
+other thing the environment needs is the tunnel credential it already uses —
+`CLOUDFLARE_TOKEN` — and a named tunnel whose hostname matches the domain you
+configured here.
 
-**applab — one line, for blue/green.** The `concurrency.group` change above,
+**sandboxlab — one line, then nothing.** The action already accepts an `api_key`
+input (`action/action.yml:14`) and installs it into the chart, but the debugger
+workflow neither declares one nor passes it down — so as it stands a dispatched
+key has no way in. Declare the input alongside the others, and pass it to the
+action:
+
+```yaml
+on:
+  workflow_dispatch:
+    inputs:
+      api_key:
+        required: false
+        default: ''
+      # ... session_hours, tunnel, domain
+```
+
+```yaml
+      - uses: ./action
+        with:
+          api_key: ${{ inputs.api_key }}
+          # ... session_hours, tunnel, cloudflare_token, domain
+```
+
+There is no secret to create: the key is a non-sensitive value labs generates
+for the deployment and passes at dispatch. sandboxlab's `domain` input is a
+choice — only `sandboxlab-1.chenshaowen.com` and `sandboxlab-2.chenshaowen.com`
+are accepted — so a named tunnel must serve one of those hostnames, and labs is
+pointed at it with `LABS_DOMAIN_SANDBOXLAB` (or a suffix that produces it); the
+default here is the second.
+
+**Do this before adding sandboxlab to `LABS_REPOS`.** GitHub rejects a dispatch
+that carries an input the workflow does not declare — the whole dispatch fails,
+nobody starts a run, and labs sees `422`. Add the repository to `LABS_REPOS`
+once the input is declared (or set `LABS_KEY_SANDBOXLAB` and skip the dispatch
+key entirely, if you would rather not touch the workflow).
+
+Because sandboxlab has one key for the whole deployment, a lab handed out from
+it carries that key and the warning that says so. sandboxlab removed per-user
+keys upstream, so this is what the deployment supports; a returned per-user key
+would change only the sandboxlab driver.
+
+**Either one — one line, for blue/green.** The `concurrency.group` change above,
 which lets two environments of the same kind run at once.
 
-**sandboxlab — one secret.** sandboxlab's `debugger.yml` takes no `api_key`
-input, so labs cannot choose the key and hand it over; the key must be set on
-both sides instead. Set the repository secret `SANDBOX_API_KEY` to a value and
-put the same value in `LABS_KEY_SANDBOXLAB`. That secret is the one the debugger
-workflow installs into the chart, so the environment comes up with the key labs
-holds. sandboxlab's `domain` input is a choice — only
-`sandboxlab-1.chenshaowen.com` and `sandboxlab-2.chenshaowen.com` are accepted —
-so a named tunnel must serve one of those hostnames, and labs is pointed at it
-with `LABS_DOMAIN_SANDBOXLAB` (or a suffix that produces it).
-
-Because there is one key for the whole sandboxlab deployment, a lab handed out
-from it carries that key and the warning that says so. sandboxlab removed
-per-user keys upstream, so this is what the deployment supports; a returned
-per-user key would change only the sandboxlab driver.
-
-**If you would rather not have labs generate the applab key** — for instance
-because you rotate it yourself — set the repository secret `APPLAB_API_KEY` and
-put the same value in `LABS_KEY_APPLAB`. Then labs uses that key and does not
-send an `api_key` input.
+**If you would rather not have labs generate a key** — for instance because you
+rotate it yourself — set the repository secret (`APPLAB_API_KEY`, or
+`SANDBOXLAB_API_KEY`) and put the same value in `LABS_KEY_APPLAB`
+(`LABS_KEY_SANDBOXLAB`). Then labs uses that key and does not send an `api_key`
+input.
 
 ## Configuration
 
@@ -214,8 +241,8 @@ environment, and everything a repository implies — the project (`applab` or
 workflow that brings it up — is derived from it. The key is generated for you.
 
 ```bash
-LABS_GITHUB_TOKEN=...          # read and write on the repositories below
-LABS_REPOS=shaowenchen/applab  # one entry = one environment
+LABS_GITHUB_TOKEN=...                          # read and write on the repos below
+LABS_REPOS=shaowenchen/applab,shaowenchen/sandboxlab  # one entry = one environment
 ```
 
 That is the whole configuration. The environment's **address is not configured
@@ -253,10 +280,11 @@ configured, and nothing is started — neither the keeper nor an on-demand start
 
 Two things are worth knowing at the top:
 
-- **The environment's key is static and configured on both sides.** Neither
-  control plane reports its key over its unauthenticated `/api/v1/config` (nor
-  should it), so labs cannot discover it — it is the same value in the
-  repository secret and in `LABS_KEY_<ID>`.
+- **labs chooses the environment's key.** Neither control plane reports its key
+  over its unauthenticated `/api/v1/config` (nor should it), so a key cannot be
+  discovered — labs generates one and hands it to the environment as the
+  dispatch's `api_key` input. A key you would rather manage yourself overrides
+  that with `LABS_KEY_<ID>`, in which case it is set on both sides and not sent.
 - **The domain must be stable.** labs finds an environment by polling
   `GET <domain><path>/api/v1/config`, which only works if the hostname is the
   same across runs. That is what a *named* Cloudflare tunnel gives; a quick

@@ -72,17 +72,19 @@ type Env struct {
 	// applab it should equal len(Slots); it is authoritative for sandboxlab.
 	Capacity int `json:"capacity"`
 
-	// APIKey is the environment's own key, which labs holds in order to mint
-	// per-session credentials. It is never serialised — a log line or a
-	// /config response must not carry it. Empty means labs made one up and
-	// hands it to the environment through the dispatch (see ManagedKey).
+	// APIKey is the environment's own key. applab uses it to mint a per-session
+	// key; sandboxlab has only the one key, so it is handed to the caller as-is.
+	// It is never serialised — a log line or a /config response must not carry
+	// it. Empty means labs made one up and hands it to the environment through
+	// the dispatch (see ManagedKey).
 	APIKey string `json:"-"`
 
 	// ManagedKey says labs chose this environment's key and passes it in the
 	// dispatch, rather than the environment having been configured with a key
 	// out of band. It is what decides whether the dispatch carries an api_key
-	// input — one that is only sent when the workflow declares it, because
-	// GitHub rejects a dispatch with an input the workflow does not know.
+	// input — which matters because GitHub rejects a dispatch carrying an input
+	// the workflow does not declare, so a workflow must be updated to accept it
+	// before labs can manage its key.
 	ManagedKey bool `json:"-"`
 }
 
@@ -93,10 +95,11 @@ type Env struct {
 // out otherwise so the workflow uses its own default. The address is then read
 // from the run log, which is how a deployment needs no domain at all.
 //
-// The api_key input is applab's alone: its debugger workflow accepts one and
-// threads it into the environment (inputs.api_key || secrets.APPLAB_API_KEY), so
-// labs can choose the key and hand it over at dispatch. sandboxlab's workflow
-// takes no such input, so its key is configured out of band and never sent.
+// The api_key input is how labs chooses the environment's key and hands it over
+// at dispatch, rather than the two sides having to be configured with the same
+// value. Both projects' actions accept it; applab's debugger workflow already
+// threads it through, and sandboxlab's needs one line changed to (see the
+// README). A key configured out of band (ManagedKey false) is not sent.
 func (e Env) DispatchInputs(sessionHours string) map[string]string {
 	out := map[string]string{
 		"session_hours": sessionHours,
@@ -105,7 +108,7 @@ func (e Env) DispatchInputs(sessionHours string) map[string]string {
 	if e.Domain != "" {
 		out["domain"] = e.Domain
 	}
-	if e.Kind == KindApplab && e.ManagedKey && e.APIKey != "" {
+	if e.ManagedKey && e.APIKey != "" {
 		out["api_key"] = e.APIKey
 	}
 	return out
