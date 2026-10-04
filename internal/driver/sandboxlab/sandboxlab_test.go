@@ -227,3 +227,13 @@ func contains(list []string, want string) bool {
 	}
 	return false
 }
+
+func TestLongErrorBodyIsShortened(t *testing.T) {
+	long := strings.Repeat("x", 900)
+	if got := briefBody([]byte(long)); len(got) > 220 {
+		t.Errorf("briefBody kept %d characters, want a short line", len(got))
+	}
+	if got := briefBody([]byte(`  {"error":"invalid key"}  `)); got != `{"error":"invalid key"}` {
+		t.Errorf("briefBody trimmed a short body to %q", got)
+	}
+}

@@ -270,7 +270,7 @@ func (d *Driver) call(ctx context.Context, env model.Env, method, path, key stri
 		return errNotFound
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return &httpError{status: resp.StatusCode, body: strings.TrimSpace(string(raw))}
+		return &httpError{status: resp.StatusCode, body: briefBody(raw)}
 	}
 	if out == nil {
 		return nil
@@ -300,6 +300,24 @@ type httpError struct {
 
 func (e *httpError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s", e.status, e.body)
+}
+
+// briefBody is an error body short enough to sit on a status line.
+//
+// It is not a debugging aid but a message for whoever is watching an
+// environment come up, and a Cloudflare error page is several hundred bytes of
+// JSON that pushes the useful part out of view. Real errors stay readable —
+// applab's own answers are one short line ("invalid key") — so this only bites
+// on the walls, where the first clause is the part worth reading ("Error 1033:
+// Cloudflare Tunnel error", "error code: 1033"). The full body is still what
+// the caller got; this is only how it is worded.
+func briefBody(raw []byte) string {
+	const max = 200
+	s := strings.TrimSpace(string(raw))
+	if len(s) <= max {
+		return s
+	}
+	return strings.TrimSpace(s[:max]) + "…"
 }
 
 var errNotFound = &httpError{status: http.StatusNotFound, body: "not found"}

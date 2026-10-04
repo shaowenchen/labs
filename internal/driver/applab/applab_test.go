@@ -307,3 +307,17 @@ func TestReadyReportsUnauthorized(t *testing.T) {
 		t.Error("an unauthorized environment still has an address")
 	}
 }
+
+// A long error body is cut to a status-line length, because it is shown to
+// whoever is watching the environment come up, not to a debugger — and an edge
+// proxy's error page is hundreds of bytes of JSON.
+func TestLongErrorBodyIsShortened(t *testing.T) {
+	long := strings.Repeat("x", 900)
+	if got := briefBody([]byte(long)); len(got) > 220 {
+		t.Errorf("briefBody kept %d characters, want a short line", len(got))
+	}
+	// A real, short error is left exactly as it came.
+	if got := briefBody([]byte(`  {"error":"invalid key"}  `)); got != `{"error":"invalid key"}` {
+		t.Errorf("briefBody(%q) = %q, want it unchanged and trimmed", `{"error":"invalid key"}`, got)
+	}
+}
