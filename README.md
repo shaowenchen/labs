@@ -163,7 +163,7 @@ on the domain as well) plus a second repository, not a labs setting.
 
 **One key, sent in every dispatch.** labs calls every environment with one fixed
 key — `LABS_ACTION_API_KEY` if you set it, otherwise the built-in default
-`labs-default-key` — and passes it as the `api_key` input on every dispatch.
+`ACTION_API_KEY` — and passes it as the `api_key` input on every dispatch.
 That one key is all it takes to drive any lab action: applab's workflow threads
 it through (`inputs.api_key || secrets.APPLAB_API_KEY`), and the debugger
 environment comes up holding it. There is nothing per-repository to configure.
@@ -207,24 +207,24 @@ Everything is an environment variable; there is no config file.
 environment, and everything a repository implies — the project (`applab` or
 `sandboxlab`, from the name), the served path (`/applab`, `/sandbox`) and the
 workflow that brings it up — is derived from it. One fixed key covers both
-kinds.
+kinds. `LABS_REPOS` itself has a default, the two projects this service drives,
+so a deployment that runs both needs no variable at all.
 
 ```bash
-LABS_GITHUB_TOKEN=...                          # read and write on the repos below
-LABS_REPOS=shaowenchen/applab,shaowenchen/sandboxlab  # one entry = one environment
+LABS_GITHUB_TOKEN=...   # read and write on the repositories; the only variable required
 ```
 
-That is the whole configuration. The environment's **address is not configured
-either** — it is read back from the environment's own run log, where the
-debugger workflow prints it (`Open the console: <url>`). That is the only way to
-learn a hostname that belongs to whatever tunnel the deployment owns, and it
-means there is nothing to type in and nothing to keep in sync.
+That is the whole configuration. The **address** defaults to the hostname each
+project's own debugger workflow starts on (`applab-1.chenshaowen.com`,
+`sandboxlab-1.chenshaowen.com`), and the **key** defaults to one shared value,
+handed to each environment at dispatch. Point either at your own with the
+overrides below.
 
 Three optional overrides. The first two are named for the repository with its
 name uppercased (`APPLAB` for `shaowenchen/applab`):
 
 - **`LABS_ACTION_API_KEY`** — the one key labs calls every environment with, instead of
-  the built-in `labs-default-key`. See "What you have to do in the other
+  the built-in `ACTION_API_KEY`. See "What you have to do in the other
   repositories" above for how each project is given it.
 - **`LABS_DOMAIN_APPLAB`** (or `LABS_DOMAIN_SUFFIX`, a shared suffix under which
   a repository named `applab` is served at `applab.<suffix>`) — set the address

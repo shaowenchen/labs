@@ -169,7 +169,12 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
-	cfg.Repos = splitList(os.Getenv("LABS_REPOS"))
+	// LABS_REPOS defaults to the two projects this service drives, so a
+	// deployment that runs both needs no variable at all. Set it to point at
+	// forks, or at a subset — one entry is one environment.
+	repos := defaultRepos
+	setString(&repos, "LABS_REPOS", defaultRepos)
+	cfg.Repos = splitList(repos)
 	cfg.Envs = buildEnvs(cfg.Repos, cfg.EnvSlots, cfg.DomainSuffix, cfg.DispatchRef, cfg.APIKey)
 
 	cfg.Problems = append(cfg.Problems, cfg.Validate()...)
@@ -220,8 +225,11 @@ func (c Config) Validate() []string {
 	if c.GitHubToken == "" {
 		add("LABS_GITHUB_TOKEN is not set: the service dispatches workflows, which needs a token with Actions: write on the repositories in LABS_REPOS")
 	}
+	// LABS_REPOS has a default, so an empty list only happens if it was set to
+	// nothing on purpose — which is a mistake worth naming, not a silent
+	// fallback to the default.
 	if len(c.Repos) == 0 {
-		add("LABS_REPOS is not set: a comma-separated list of owner/repo the service may dispatch in")
+		add("LABS_REPOS is empty: a comma-separated list of owner/repo the service may dispatch in")
 	}
 	for _, r := range c.Repos {
 		if !strings.Contains(r, "/") {
@@ -550,4 +558,13 @@ func splitList(v string) []string {
 // It is non-secret by construction — it is checked into this repository — so it
 // is compiled in rather than required as configuration. Set LABS_ACTION_API_KEY
 // to use a key of your own, or LABS_KEY_<ID> for one environment only.
-const defaultAPIKey = "labs-default-key"
+//
+// It is the same value everywhere so a deployment needs no variables at all:
+// labs sends it as the dispatch's api_key, and each project comes up holding it.
+const defaultAPIKey = "ACTION_API_KEY"
+
+// defaultRepos are the repositories this service drives when LABS_REPOS says
+// nothing: the two projects whose debugger environments it hands out, one
+// entry each. A deployment running both therefore needs no LABS_REPOS at all.
+// Set it to run a fork, or only one of the two.
+const defaultRepos = "shaowenchen/applab,shaowenchen/sandboxlab"

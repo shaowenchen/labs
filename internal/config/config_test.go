@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/shaowenchen/labs/internal/model"
 )
 
 // setEnv sets the variables a valid single-applab-repo configuration needs, so
@@ -255,8 +257,27 @@ func TestMissingTokenIsAProblem(t *testing.T) {
 	}
 }
 
-func TestMissingRepoIsAProblem(t *testing.T) {
+// LABS_REPOS has a default — the two projects this service drives — so a
+// deployment running both needs no variable at all.
+func TestRepoDefaultsToTheTwoProjects(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_REPOS": ""})
+	cfg := mustLoad(t)
+	if !cfg.Usable() {
+		t.Fatalf("a deployment with no LABS_REPOS should be usable, problems: %v", cfg.Problems)
+	}
+	kinds := map[model.Kind]bool{}
+	for _, e := range cfg.Envs {
+		kinds[e.Kind] = true
+	}
+	if !kinds[model.KindApplab] || !kinds[model.KindSandboxlab] {
+		t.Fatalf("the default repositories should give one environment of each kind, got %v", cfg.Envs)
+	}
+}
+
+// A repository that is not owner/repo is still a problem: LABS_REPOS has a
+// default, but a value set to nonsense is a typo, not a reason to fall back.
+func TestBadRepoIsAProblem(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_REPOS": "notaRepo"})
 	cfg := mustLoad(t)
 	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_REPOS") {
 		t.Fatalf("want a problem naming LABS_REPOS, got %v", cfg.Problems)
@@ -320,12 +341,11 @@ func TestZeroSlotsIsAProblem(t *testing.T) {
 // Every problem is reported at once, so one restart shows everything to fix
 // rather than one thing per attempt.
 func TestAllProblemsAreReportedTogether(t *testing.T) {
-	for _, k := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS"} {
-		t.Setenv(k, "")
-	}
+	t.Setenv("LABS_GITHUB_TOKEN", "")
+	t.Setenv("LABS_ENV_SLOTS", "0")
 	cfg := mustLoad(t)
 	if len(cfg.Problems) < 2 {
-		t.Fatalf("want the missing variables reported together, got %v", cfg.Problems)
+		t.Fatalf("want the problems reported together, got %v", cfg.Problems)
 	}
 }
 
