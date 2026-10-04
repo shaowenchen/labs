@@ -101,143 +101,16 @@ func (f *fakeGitHub) server() *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-func testKeeper(t *testing.T, f *fakeGitHub, now time.Time) *Keeper {
+func testStarter(t *testing.T, f *fakeGitHub) *Starter {
 	t.Helper()
 	srv := f.server()
 	t.Cleanup(srv.Close)
 
-	k := NewKeeper(KeeperConfig{
-		Client:   New(srv.URL, "token"),
-		Targets:  []Target{{ID: "applab-1", Repo: "o/r", Workflow: "debugger.yml", Ref: "main", Inputs: map[string]string{"domain": "a.example.com"}}},
-		Interval: time.Minute,
-		Lifetime: 4 * time.Hour,
-		Margin:   45 * time.Minute,
-		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	return NewStarter(StarterConfig{
+		Client:  New(srv.URL, "token"),
+		Targets: []Target{{ID: "applab-1", Repo: "o/r", Workflow: "debugger.yml", Ref: "main", Inputs: map[string]string{"domain": "a.example.com"}}},
+		Log:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
-	k.now = func() time.Time { return now }
-	return k
-}
-
-// The load-bearing test: with a run already queued, a tick must NOT dispatch,
-// because GitHub's default concurrency queue holds one pending run and a second
-// dispatch cancels the first. A keeper that got this wrong would cancel its own
-// successor every tick and the environment would never come back.
-func TestTickDoesNotDispatchOverAQueuedRun(t *testing.T) {
-	f := &fakeGitHub{}
-	f.setRuns(Run{ID: 1, Status: "queued", CreatedAt: time.Now()})
-	k := testKeeper(t, f, time.Now())
-
-	k.Tick(context.Background())
-
-	if n := f.dispatchCount(); n != 0 {
-		t.Fatalf("dispatched %d times with a run already queued; want 0", n)
-	}
-}
-
-func TestTickDispatchesWhenNothingIsRunning(t *testing.T) {
-	f := &fakeGitHub{}
-	f.setRuns() // no runs at all
-	k := testKeeper(t, f, time.Now())
-
-	k.Tick(context.Background())
-
-	if n := f.dispatchCount(); n != 1 {
-		t.Fatalf("dispatched %d times with nothing running; want 1", n)
-	}
-	got := f.lastDispatch()
-	if got["ref"] != "main" {
-		t.Errorf("dispatched ref = %v, want main", got["ref"])
-	}
-	inputs, _ := got["inputs"].(map[string]any)
-	if inputs["domain"] != "a.example.com" {
-		t.Errorf("dispatched domain = %v, want a.example.com", inputs["domain"])
-	}
-}
-
-func TestTickDispatchesAfterARunCompletes(t *testing.T) {
-	f := &fakeGitHub{}
-	f.setRuns(Run{ID: 1, Status: "completed", Conclusion: "success", CreatedAt: time.Now().Add(-5 * time.Hour)})
-	k := testKeeper(t, f, time.Now())
-
-	k.Tick(context.Background())
-
-	if n := f.dispatchCount(); n != 1 {
-		t.Fatalf("dispatched %d times after a completed run; want 1", n)
-	}
-}
-
-func TestTickLeavesAFreshRunAlone(t *testing.T) {
-	now := time.Now()
-	f := &fakeGitHub{}
-	f.setRuns(Run{ID: 1, Status: "in_progress", StartedAt: now.Add(-10 * time.Minute)})
-	k := testKeeper(t, f, now)
-
-	k.Tick(context.Background())
-
-	if n := f.dispatchCount(); n != 0 {
-		t.Fatalf("dispatched %d times while a run is in its first hour; want 0", n)
-	}
-}
-
-func TestTickQueuesASuccessorNearTheEndOfARun(t *testing.T) {
-	now := time.Now()
-	f := &fakeGitHub{}
-	// Started 3h40m ago against a 4h lifetime and a 45m margin: past the point a
-	// successor should be queued.
-	f.setRuns(Run{ID: 1, Status: "in_progress", StartedAt: now.Add(-3*time.Hour - 40*time.Minute)})
-	k := testKeeper(t, f, now)
-
-	k.Tick(context.Background())
-
-	if n := f.dispatchCount(); n != 1 {
-		t.Fatalf("dispatched %d times near the end of a run; want 1", n)
-	}
-}
-
-func TestTickDoesNotDispatchWhenListingFails(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "boom", http.StatusInternalServerError)
-	}))
-	defer srv.Close()
-
-	k := NewKeeper(KeeperConfig{
-		Client:   New(srv.URL, "token"),
-		Targets:  []Target{{ID: "e", Repo: "o/r", Workflow: "w.yml", Ref: "main"}},
-		Interval: time.Minute, Lifetime: 4 * time.Hour, Margin: 45 * time.Minute,
-		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
-	// If the listing fails the keeper cannot know whether a run is up, and a
-	// blind dispatch could cancel a live run's successor. It must do nothing.
-	k.Tick(context.Background())
-}
-
-func TestDispatchInputsAreSentVerbatim(t *testing.T) {
-	f := &fakeGitHub{}
-	f.setRuns()
-	k := testKeeper(t, f, time.Now())
-	k.targets[0].Inputs = map[string]string{
-		"session_hours": "4",
-		"tunnel":        "cloudflare",
-		"domain":        "applab-1.example.com",
-	}
-
-	k.Tick(context.Background())
-
-	inputs, _ := f.lastDispatch()["inputs"].(map[string]any)
-	for k, want := range map[string]string{"session_hours": "4", "tunnel": "cloudflare", "domain": "applab-1.example.com"} {
-		if inputs[k] != want {
-			t.Errorf("input %q = %v, want %q", k, inputs[k], want)
-		}
-	}
-}
-
-func TestLifetimeForRun(t *testing.T) {
-	cases := map[string]time.Duration{"1": time.Hour, "2": 2 * time.Hour, "4": 4 * time.Hour, "unlimited": 6 * time.Hour, "": 4 * time.Hour}
-	for in, want := range cases {
-		if got := LifetimeForRun(in); got != want {
-			t.Errorf("LifetimeForRun(%q) = %s, want %s", in, got, want)
-		}
-	}
 }
 
 func TestAPIErrorNamesRateLimit(t *testing.T) {
@@ -250,12 +123,12 @@ func TestAPIErrorNamesRateLimit(t *testing.T) {
 	}
 }
 
-// A request that finds nothing running starts a run — this is what brings an
-// environment up on a host with no keeper.
+// Nothing running starts a run: this is what brings an environment up when a
+// request needs one.
 func TestEnsureRunningDispatchesWhenNothingRuns(t *testing.T) {
 	f := &fakeGitHub{}
 	f.setRuns() // nothing
-	k := testKeeper(t, f, time.Now())
+	k := testStarter(t, f)
 
 	if !k.EnsureRunning(context.Background(), k.targets[0]) {
 		t.Fatal("EnsureRunning = false with nothing running; want a dispatch")
@@ -265,13 +138,13 @@ func TestEnsureRunningDispatchesWhenNothingRuns(t *testing.T) {
 	}
 }
 
-// A request must not cancel a queued successor: the same rule the keeper turns
-// on. A run already queued means an environment is coming, so nothing is sent.
+// A run already queued is the environment coming up, and is used as it is: a
+// second dispatch would replace it rather than add to it, so nothing is sent.
 func TestEnsureRunningDoesNotDispatchOverAQueuedRun(t *testing.T) {
 	now := time.Now()
 	f := &fakeGitHub{}
 	f.setRuns(Run{ID: 1, Status: "queued", CreatedAt: now})
-	k := testKeeper(t, f, now)
+	k := testStarter(t, f)
 
 	if !k.EnsureRunning(context.Background(), k.targets[0]) {
 		t.Fatal("EnsureRunning = false with a run queued; want true")
@@ -286,7 +159,7 @@ func TestEnsureRunningLeavesALiveRunAlone(t *testing.T) {
 	now := time.Now()
 	f := &fakeGitHub{}
 	f.setRuns(Run{ID: 1, Status: "in_progress", StartedAt: now.Add(-time.Minute)})
-	k := testKeeper(t, f, now)
+	k := testStarter(t, f)
 
 	if !k.EnsureRunning(context.Background(), k.targets[0]) {
 		t.Fatal("EnsureRunning = false with a live run; want true")

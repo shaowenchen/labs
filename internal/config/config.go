@@ -61,18 +61,6 @@ type Config struct {
 	// 1, 2, 4 or unlimited.
 	DispatchSessionHours string
 
-	// KeepWarm turns on the keeper that dispatches successor runs so an
-	// environment is always up. Off means an environment is started on demand,
-	// which costs a cold boot on the first request.
-	KeepWarm bool
-
-	// KeepWarmInterval is how often the keeper looks at each environment.
-	KeepWarmInterval time.Duration
-
-	// RedispatchMargin is how long before a run's expected end the keeper
-	// queues its successor.
-	RedispatchMargin time.Duration
-
 	// MaxSessions caps concurrent sessions across all environments. Zero means
 	// derive it from the environments' own capacities.
 	MaxSessions int
@@ -152,20 +140,14 @@ func Load() (Config, error) {
 
 	cfg.Listen = resolveListen(cfg.Listen)
 
-	// These four are the only unreadable values: the variable is set to
-	// something that is not a duration or a number. A typo in one of them is
-	// still a reason to stop, because continuing would silently substitute the
-	// default for the value the operator clearly meant to set.
+	// These are the only unreadable values: the variable is set to something
+	// that is not a duration or a number. A typo in one of them is still a
+	// reason to stop, because continuing would silently substitute the default
+	// for the value the operator clearly meant to set.
 	if cfg.SessionTTL, err = durationEnv("LABS_SESSION_TTL", 2*time.Hour); err != nil {
 		return Config{}, err
 	}
 	if cfg.ReapInterval, err = durationEnv("LABS_REAP_INTERVAL", 30*time.Second); err != nil {
-		return Config{}, err
-	}
-	if cfg.KeepWarmInterval, err = durationEnv("LABS_KEEPWARM_INTERVAL", time.Minute); err != nil {
-		return Config{}, err
-	}
-	if cfg.RedispatchMargin, err = durationEnv("LABS_REDISPATCH_MARGIN", 45*time.Minute); err != nil {
 		return Config{}, err
 	}
 	if cfg.RateLimitWindow, err = durationEnv("LABS_RATE_LIMIT_WINDOW", time.Hour); err != nil {
@@ -183,9 +165,6 @@ func Load() (Config, error) {
 	if cfg.EnvSlots, err = intEnv("LABS_ENV_SLOTS", defaultEnvSlots); err != nil {
 		return Config{}, err
 	}
-	if cfg.KeepWarm, err = boolEnv("LABS_KEEPWARM", true); err != nil {
-		return Config{}, err
-	}
 	if cfg.TrustedProxy, err = boolEnv("LABS_TRUSTED_PROXY", false); err != nil {
 		return Config{}, err
 	}
@@ -198,7 +177,7 @@ func Load() (Config, error) {
 }
 
 // Usable reports whether the configuration is complete enough to serve labs. It
-// is what /readyz answers, and what decides whether the keeper is started.
+// is what /readyz answers, and whether an environment can be dispatched at all.
 func (c Config) Usable() bool { return len(c.Problems) == 0 }
 
 // resolveListen decides the address to bind.

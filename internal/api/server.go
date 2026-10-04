@@ -25,10 +25,6 @@ type SessionService interface {
 	Release(ctx context.Context, id string) error
 	Status(ctx context.Context) []session.EnvStatus
 	ReadyAny(ctx context.Context) bool
-
-	// EnsureStarted starts a cluster of each kind that is not up, so a visit to
-	// the page can bring one up before anyone asks for a lab.
-	EnsureStarted(ctx context.Context)
 }
 
 // Deps is what the server needs.
@@ -79,7 +75,6 @@ func (s *Server) routes() http.Handler {
 	// the rate limit on the one route that creates something.
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
-	mux.HandleFunc("POST /api/v1/ensure", s.ensure)
 	mux.HandleFunc("GET /api/v1/config", s.getConfig)
 	mux.HandleFunc("GET /api/v1/describe", s.describe)
 

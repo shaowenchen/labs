@@ -37,8 +37,8 @@ import (
 )
 
 func main() {
-	// A signal-cancelled context is what lets the keeper and the reaper stop and
-	// the HTTP server drain, rather than the process being killed mid-request.
+	// A signal-cancelled context is what lets the reaper stop and the HTTP
+	// server drain, rather than the process being killed mid-request.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -102,21 +102,17 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 
 	gh := gha.New(cfg.GitHubAPI, cfg.GitHubToken)
 
-	// The keeper both keeps environments warm in the background and starts one
-	// on demand when a request finds none up. On a host with no long-lived
-	// process the background loop does not run, but the on-demand path still
-	// works — it is a request, not a timer — so a caller can bring an
-	// environment up simply by asking for a lab.
-	keeper := gha.NewKeeper(gha.KeeperConfig{
-		Client:   gh,
-		Targets:  keeperTargets(cfg),
-		Interval: cfg.KeepWarmInterval,
-		Lifetime: gha.LifetimeForRun(cfg.DispatchSessionHours),
-		Margin:   cfg.RedispatchMargin,
-		Log:      log,
+	// The starter checks whether an environment's workflow has a run going and
+	// dispatches one only when it does not. There is no timer: a repository runs
+	// one environment at a time, so "is it up" is a question asked when a lab is
+	// wanted, not something to poll for.
+	starter := gha.NewStarter(gha.StarterConfig{
+		Client:  gh,
+		Targets: starterTargets(cfg),
+		Log:     log,
 	})
 	targetByEnv := map[string]gha.Target{}
-	for _, t := range keeperTargets(cfg) {
+	for _, t := range starter.Targets() {
 		targetByEnv[t.ID] = t
 	}
 
@@ -124,29 +120,18 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 	// For environments configured with no domain, the address is read from the
 	// environment's own run log.
 	manager.WithDiscovery(gha.NewDiscoverer(gh).Discover)
-	// A request that finds nothing up starts one, unless the configuration
-	// cannot dispatch at all.
+	// Creating a lab is what brings an environment up: the check-and-dispatch
+	// runs then, and only then. A deployment that cannot dispatch does not get a
+	// starter at all, so the request is answered as "not configured".
 	if cfg.Usable() {
 		manager.WithStarter(func(ctx context.Context, env model.Env) bool {
 			t, ok := targetByEnv[env.ID]
 			if !ok {
 				return false
 			}
-			return keeper.EnsureRunning(ctx, t)
+			return starter.EnsureRunning(ctx, t)
 		})
 	}
-
-	if cfg.KeepWarm && cfg.Usable() {
-		go keeper.Run(ctx)
-	} else if !cfg.KeepWarm {
-		log.Info("LABS_KEEPWARM is off; an environment is started only when a request needs one")
-	}
-
-	// Make the records a later provision needs exist ahead of the first request,
-	// so the first caller does not pay for creating them. Best-effort: an
-	// environment that is not up yet just logs a warning here, and Provision
-	// ensures the slot itself when the time comes.
-	go warmLoop(ctx, manager, cfg.KeepWarmInterval)
 
 	go reaper.New(manager, cfg.ReapInterval, log).Run(ctx)
 
@@ -192,10 +177,10 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 	return nil
 }
 
-// keeperTargets turns the configured environments into keeper targets, using the
-// same input-building the model owns so a workflow is dispatched identically
-// however it is started.
-func keeperTargets(cfg config.Config) []gha.Target {
+// starterTargets turns the configured environments into starter targets, using
+// the same input-building the model owns so a workflow is dispatched
+// identically however it is started.
+func starterTargets(cfg config.Config) []gha.Target {
 	targets := make([]gha.Target, 0, len(cfg.Envs))
 	for _, env := range cfg.Envs {
 		targets = append(targets, gha.Target{
@@ -207,25 +192,6 @@ func keeperTargets(cfg config.Config) []gha.Target {
 		})
 	}
 	return targets
-}
-
-// warmLoop ensures slots exist periodically, so a provision that follows an
-// environment coming up does not have to create anything first.
-func warmLoop(ctx context.Context, m *session.Manager, interval time.Duration) {
-	if interval <= 0 {
-		interval = time.Minute
-	}
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	m.Warm(ctx)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			m.Warm(ctx)
-		}
-	}
 }
 
 func printResolved(cfg config.Config, log *slog.Logger) {
@@ -247,7 +213,6 @@ func printResolved(cfg config.Config, log *slog.Logger) {
 	log.Info("resolved configuration",
 		"listen", cfg.Listen,
 		"session_ttl", cfg.SessionTTL.String(),
-		"keep_warm", cfg.KeepWarm,
 		"trusted_proxy", cfg.TrustedProxy,
 		"max_sessions", cfg.SessionCeiling(),
 		"max_sessions_per_ip", cfg.MaxSessionsPerIP,

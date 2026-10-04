@@ -35,8 +35,9 @@ nobody is keeping the environment up.
 
 `labs` closes that gap. It is a small service that:
 
-- keeps an environment **warm** by dispatching the debugger workflow again before
-  the current run ends, so there is always one up;
+- brings an environment **up on demand**: a repository runs one environment at a
+  time, so when a lab is asked for it checks whether one is already running and
+  uses it, dispatching a run only if none is;
 - hands a caller a **link and a key** in one anonymous call;
 - makes each delivered lab expire, by revoking the credential it minted.
 
@@ -49,7 +50,7 @@ something.
 
 ```
 caller ──POST /api/v1/labs──▶ labs
-                               │  reserve a free slot in a warm environment
+                               │  reserve a free slot in the environment (starting one if none is up)
                                │  rotate that slot's app key  ──▶ applab  (admin key)
                                ▼
                           { console_url, api_key, expires_at }  ──▶ the caller
@@ -72,33 +73,26 @@ its slot back rather than leaking it.
 
 ## Starting an environment, on demand
 
-A request for a lab that finds nothing running **starts an environment itself**.
-That is what lets the service run on a host that starts it per request: the
-background keeper may not be running there, but a request is, and a request is
-enough to dispatch the workflow. The environment takes a few minutes to boot, so
-that request answers "one is being started" and the environment it started is
-there for the next one.
+There is no timer. A repository runs **one environment at a time** — its
+workflow's `concurrency` group allows a single run — so "is it up" is a question
+asked when a lab is wanted, not something to poll for. When a lab is created:
 
-## Keeping the environment warm
+- **a run is already queued or in progress** — that *is* the environment, whoever
+  started it (this service a minute ago, or a person by hand this morning), and
+  it is used as it is. Nothing is dispatched, because a second dispatch would
+  replace the first rather than add to it.
+- **nothing is running** — a run is dispatched. It takes a few minutes to boot,
+  so that request answers "one is being started" and the environment it started
+  is there for the next one.
+- **the run listing fails** — nothing is dispatched. A blind dispatch could
+  cancel a run that is actually live; the caller can try again.
 
-A GitHub-hosted job cannot run for more than six hours, and an environment is
-expected to be reachable for much longer than that, so the keeper dispatches a
-**successor run** shortly before the current one ends. The successor waits in
-the queue and starts the moment the current run stops.
+The check and the dispatch happen under one lock per environment, so two
+requests arriving together cannot both see "nothing running" and both dispatch.
 
-There is a rule the keeper exists around. GitHub's default concurrency queue
-holds a single pending run, and **a new dispatch cancels the one already
-waiting**. A keeper that dispatched on every tick would therefore cancel its own
-successor, forever, and the environment would never come back. So the keeper
-never dispatches while a run is queued, and the check and the dispatch happen
-under one lock per environment. It is the first thing the tests cover.
-
-There is still a **gap** when one run ends and the next boots: the runner has to
-create the cluster and install the control plane, which takes about ten minutes.
-During it, `POST /api/v1/labs` answers `503` with a `Retry-After`, and `/readyz`
-says which environment is missing. Closing the gap entirely needs two
-environments of the same kind running in antiphase — see
-[Warmth, and what it costs](#warmth-and-what-it-costs).
+The run's own `session_hours` (default `4`) is how long it lives; when it ends,
+the environment is gone until the next request starts another. That is the
+trade: no runner is held between requests, and a quiet deployment costs nothing.
 
 ## The API
 
@@ -147,28 +141,23 @@ reason: trusting the header from the open internet makes every limit bypassable
 by sending one, so it should only be on when the service sits behind a proxy
 that sets it *and* the service's own port is not reachable directly.
 
-## Warmth, and what it costs
+## What an environment costs
 
-Keeping an environment warm means holding a GitHub-hosted runner for as long as
-the environment is up. At a four-hour run replaced continuously, that is roughly
-**130 runner-hours a month, per warm environment** — which matters on a private
-repository and on the free tier (2,000 minutes a month). `LABS_KEEPWARM=false`
-turns the writer off: an environment is then started only when a request needs
-one, which costs a few minutes on the first request after a quiet spell but
-holds no runner at all in between.
+An environment is a GitHub-hosted runner held for as long as it is up — at a
+four-hour run, roughly **130 runner-hours a month per environment that is up
+continuously**. On a private repository or the free tier (2,000 minutes a
+month), that is the number to watch.
 
-To remove the boot gap you need two environments of the same kind overlapping:
-while one drains, the other is already up. The workflows' `concurrency` group
-currently keys on the repository alone, so two runs of the same workflow cannot
-coexist — one line changes that:
+labs holds nothing in between. It never dispatches on a timer: it checks, and
+only starts an environment when a lab is asked for and none is running. A quiet
+deployment therefore spends nothing, and pays a few minutes of cold boot on the
+first request after a quiet spell.
 
-```yaml
-concurrency:
-  group: applab-debugger-${{ github.repository }}-${{ inputs.domain }}
-```
-
-With that, configure two repositories' worth of environments on different
-domains and the keeper holds them in antiphase.
+There is no second environment to overlap. A repository's workflow runs one
+environment at a time — its `concurrency` group allows a single run — so a
+second dispatch would replace the first rather than add to it. If you ever want
+blue/green, that is a change on the workflow side (key the `concurrency` group
+on the domain as well) plus a second repository, not a labs setting.
 
 ## What you have to do in the other repositories
 
@@ -259,28 +248,27 @@ value that was meant.
 
 It will not dispatch anything or hand out a lab until the configuration is
 complete: `/readyz` stays `503`, `POST /api/v1/labs` says the deployment is not
-configured, and nothing is started — neither the keeper nor an on-demand start.
+configured, and nothing is started — no environment, and no dispatch.
 
 Two things are worth knowing at the top:
 
 - **The key is fixed, not discovered.** Neither control plane reports its key
   over its unauthenticated `/api/v1/config` (nor should it), so labs cannot read
-  it — it calls every environment with one fixed value, `LABS_ACTION_API_KEY` or the
-  built-in default, and each project is given that value its own way. Fixed
-  rather than random is what lets labs reach an environment it did not itself
-  just dispatch.
-- **The domain must be stable.** labs finds an environment by polling
-  `GET <domain><path>/api/v1/config`, which only works if the hostname is the
-  same across runs. That is what a *named* Cloudflare tunnel gives; a quick
-  tunnel is assigned a new hostname each run and labs would never find it.
+  it — it calls every environment with one fixed value, `LABS_ACTION_API_KEY` or
+  the built-in default. Fixed rather than random is what lets labs reach an
+  environment it did not itself just dispatch.
+- **The domain must be stable.** labs reaches an environment at the hostname you
+  configure, so it must be the same across runs — which a *named* Cloudflare
+  tunnel gives, and a quick tunnel does not (it is assigned a new hostname each
+  run).
 
 ## Running it
 
-It is a **long-lived process**, not a serverless function. Two loops run for the
-life of the process — the keeper that dispatches successor runs, and the reaper
-that expires sessions every thirty seconds — and there is no timer in a
-request-scoped runtime for either to run in. Put it on a host, a VM or a
-Kubernetes cluster, not on a platform that starts it per request.
+It is a **long-lived process**, not a serverless function. The reaper loop runs
+for the life of the process, expiring sessions every thirty seconds, and the
+session store and rate limiter are in-process; there is no timer in a
+request-scoped runtime for any of it. Put it on a host, a VM or a Kubernetes
+cluster, not on a platform that starts it per request.
 
 ```bash
 cp .env.example .env      # fill it in
@@ -324,8 +312,8 @@ The tests need no cluster, no GitHub and no tunnel. GitHub is a fake
 environments are fake servers that speak just enough of each control plane's
 API. What they pin down is the behaviour that is expensive to get wrong:
 
-- the keeper never dispatches over a queued run (the bug that would wedge an
-  environment permanently);
+- a run already queued or in progress is used as it is, never dispatched over
+  (a second dispatch would replace it, wedging the environment);
 - a failed provision gives its slot back;
 - a restart forgets every live session, so reconciliation rotates them all away
   rather than leaving a credential working;

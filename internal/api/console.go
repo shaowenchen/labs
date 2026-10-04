@@ -121,7 +121,13 @@ function renderEnvs(list) {
     st.textContent = e.ready ? 'ready' : (e.unauthorized ? 'key needed' : 'starting');
     top.append(dot, name, document.createTextNode(' '), st, Object.assign(document.createElement('span'), { className: 'meta', textContent: ' · ' + e.id }));
     box.append(top);
-    if (e.capacity) box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.occupied + ' of ' + e.capacity + ' application slots in use' }));
+    // applab lends out named applications; sandboxlab hands out sandboxes, and a
+    // lab there is not an "application" — so the line names what is being
+    // counted rather than calling everything an app.
+    if (e.capacity) {
+      const what = e.kind === 'sandboxlab' ? 'sandboxes' : 'application slots';
+      box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.occupied + ' of ' + e.capacity + ' ' + what + ' in use' }));
+    }
     if (e.console_url) {
       const u = document.createElement('div'); u.className = 'msg';
       const a = document.createElement('a'); a.href = e.console_url; a.textContent = e.console_url; a.target = '_blank'; a.rel = 'noopener';
@@ -175,9 +181,10 @@ async function fetchJSON(url, opts) {
 }
 async function loadStatus() {
   try {
-    // /ensure starts a cluster if none is up; /config carries the state. Both
-    // are cheap — the readiness probe lives behind /config alone.
-    await fetchJSON('api/v1/ensure', { method: 'POST' });
+    // /config carries both the state and the cluster status; it is what the
+    // page shows, refreshed on a timer so an environment coming up turns into a
+    // button without a reload. Nothing is started here — a lab is created, and
+    // that is what brings an environment up.
     const { body } = await fetchJSON('api/v1/config');
     const cfg = body.data || {};
     setFooter(cfg);

@@ -81,7 +81,7 @@ func (c *Client) resolveRef(ctx context.Context, repo, ref string) (string, erro
 	return out.DefaultBranch, nil
 }
 
-// Run is one workflow run, reduced to what the keeper decides on.
+// Run is one workflow run, reduced to what deciding whether to dispatch needs.
 type Run struct {
 	ID         int64     `json:"id"`
 	Status     string    `json:"status"`     // queued | in_progress | completed

@@ -76,10 +76,9 @@ type Manager struct {
 	discover func(ctx context.Context, env model.Env) (string, string)
 
 	// start makes sure an environment is coming up, dispatching a run if none is
-	// active. It is what lets a request bring an environment up on a host with
-	// no keeper running — a serverless one, where a request is the only thing
-	// that can. Nil means nothing can start one, and a request that finds none
-	// up is answered as such.
+	// active. It runs when a lab is created and finds nothing up — that request
+	// is what brings an environment up. Nil means nothing can start one, and a
+	// request that finds none up is answered as such.
 	start func(ctx context.Context, env model.Env) bool
 
 	mu    sync.Mutex
@@ -150,10 +149,9 @@ func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP strin
 	}
 
 	// Nothing is up. If something can start one, start it — a caller asking for
-	// a lab is a good reason to bring an environment up, and on a host with no
-	// keeper running it is the only thing that will. The environment takes
-	// minutes to boot, so this request cannot wait for it: it answers "not yet",
-	// and the environment it started is there for the next one.
+	// a lab is what brings an environment up. The environment takes minutes to
+	// boot, so this request cannot wait for it: it answers "not yet", and the
+	// environment it started is there for the next one.
 	if m.startOne(ctx, kind) {
 		return Result{}, fmt.Errorf("%w: no %s environment was up, so one is being started", ErrNoReadyEnv, kind)
 	}
@@ -279,27 +277,6 @@ func (m *Manager) startOne(ctx context.Context, kind model.Kind) bool {
 	return false
 }
 
-// EnsureStarted starts a cluster of each kind that is not up.
-//
-// It is what the landing page calls when it loads: a visit is a good reason to
-// have a cluster coming, and on a host with no keeper it is the only thing that
-// will start one before someone asks for a lab. It is idempotent — an
-// environment that is up is skipped, and the start itself does nothing when a
-// run is already running or queued.
-func (m *Manager) EnsureStarted(ctx context.Context) {
-	if m.start == nil {
-		return
-	}
-	for _, env := range m.cfg.Envs {
-		if drv := m.drivers[env.Kind]; drv != nil {
-			if m.envReady(ctx, drv, env).Ready {
-				continue
-			}
-		}
-		m.start(ctx, env)
-	}
-}
-
 // Get returns a recorded session.
 func (m *Manager) Get(id string) (model.Session, bool) {
 	return m.store.Get(id)
@@ -363,21 +340,6 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 	}
 	return firstErr
-}
-
-// Warm makes sure every environment has the records a later provision needs.
-func (m *Manager) Warm(ctx context.Context) {
-	for _, env := range m.cfg.Envs {
-		drv := m.drivers[env.Kind]
-		if drv == nil {
-			continue
-		}
-		for _, app := range env.Slots {
-			if err := drv.EnsureSlot(ctx, env, app); err != nil {
-				m.log.Warn("could not ensure a slot", "env", env.ID, "app", app, "error", err)
-			}
-		}
-	}
 }
 
 // EnvStatus is one environment's readiness, for /readyz and /config.
