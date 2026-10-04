@@ -172,49 +172,32 @@ domains and the keeper holds them in antiphase.
 
 ## What you have to do in the other repositories
 
-**applab — nothing.** labs dispatches `debugger.yml` with the key it generated
-as the `api_key` input. applab's workflow already threads that through
+**One key covers both.** labs calls every environment with one fixed key —
+`LABS_API_KEY` if you set it, otherwise the built-in default
+`labs-default-key`. How each project is given that key differs, because the
+projects differ, and that is the only thing you have to arrange.
+
+**applab — nothing.** labs dispatches `debugger.yml` with the key as the
+`api_key` input. applab's workflow threads that through
 (`inputs.api_key || secrets.APPLAB_API_KEY`), so the environment comes up
 configured with the key labs holds, and there is no secret to set. The only
 other thing the environment needs is the tunnel credential it already uses —
 `CLOUDFLARE_TOKEN` — and a named tunnel whose hostname matches the domain you
 configured here.
 
-**sandboxlab — one line, then nothing.** The action already accepts an `api_key`
-input (`action/action.yml:14`) and installs it into the chart, but the debugger
-workflow neither declares one nor passes it down — so as it stands a dispatched
-key has no way in. Declare the input alongside the others, and pass it to the
-action:
+**sandboxlab — one secret.** Its debugger workflow reads the key from the
+repository secret `SANDBOXLAB_API_KEY` (`api_key: ${{
+secrets.SANDBOXLAB_API_KEY }}` in its `uses: ./action` block) — a path a
+dispatch cannot reach, so labs does not try. Set that secret to `LABS_API_KEY`,
+or to `labs-default-key` if you left `LABS_API_KEY` unset, and sandboxlab comes
+up holding the key labs will call it with. Do not send it as a dispatch input:
+its workflow declares no `api_key` input, and GitHub rejects a dispatch carrying
+an unknown one (422 — no run starts).
 
-```yaml
-on:
-  workflow_dispatch:
-    inputs:
-      api_key:
-        required: false
-        default: ''
-      # ... session_hours, tunnel, domain
-```
-
-```yaml
-      - uses: ./action
-        with:
-          api_key: ${{ inputs.api_key }}
-          # ... session_hours, tunnel, cloudflare_token, domain
-```
-
-There is no secret to create: the key is a non-sensitive value labs generates
-for the deployment and passes at dispatch. sandboxlab's `domain` input is a
-choice — only `sandboxlab-1.chenshaowen.com` and `sandboxlab-2.chenshaowen.com`
-are accepted — so a named tunnel must serve one of those hostnames, and labs is
-pointed at it with `LABS_DOMAIN_SANDBOXLAB` (or a suffix that produces it); the
-default here is the second.
-
-**Do this before adding sandboxlab to `LABS_REPOS`.** GitHub rejects a dispatch
-that carries an input the workflow does not declare — the whole dispatch fails,
-nobody starts a run, and labs sees `422`. Add the repository to `LABS_REPOS`
-once the input is declared (or set `LABS_KEY_SANDBOXLAB` and skip the dispatch
-key entirely, if you would rather not touch the workflow).
+sandboxlab's `domain` input is a choice — only `sandboxlab-1.chenshaowen.com`
+and `sandboxlab-2.chenshaowen.com` are accepted — so a named tunnel must serve
+one of those hostnames, and labs is pointed at it with `LABS_DOMAIN_SANDBOXLAB`
+(or a suffix that produces it); the default here is the second.
 
 Because sandboxlab has one key for the whole deployment, a lab handed out from
 it carries that key and the warning that says so. sandboxlab removed per-user
@@ -224,11 +207,10 @@ would change only the sandboxlab driver.
 **Either one — one line, for blue/green.** The `concurrency.group` change above,
 which lets two environments of the same kind run at once.
 
-**If you would rather not have labs generate a key** — for instance because you
-rotate it yourself — set the repository secret (`APPLAB_API_KEY`, or
-`SANDBOXLAB_API_KEY`) and put the same value in `LABS_KEY_APPLAB`
-(`LABS_KEY_SANDBOXLAB`). Then labs uses that key and does not send an `api_key`
-input.
+**If you would rather not use the shared key** — for instance because you rotate
+a key of your own — set `LABS_API_KEY` (or `LABS_KEY_<ID>` for one environment)
+to it, and put the same value in that repository's secret. applab takes it from
+the dispatch either way; sandboxlab needs the secret set to match.
 
 ## Configuration
 
@@ -238,7 +220,8 @@ Everything is an environment variable; there is no config file.
 **There is no environment list to write.** One entry in `LABS_REPOS` is one
 environment, and everything a repository implies — the project (`applab` or
 `sandboxlab`, from the name), the served path (`/applab`, `/sandbox`) and the
-workflow that brings it up — is derived from it. The key is generated for you.
+workflow that brings it up — is derived from it. One fixed key covers both
+kinds.
 
 ```bash
 LABS_GITHUB_TOKEN=...                          # read and write on the repos below
@@ -251,15 +234,18 @@ debugger workflow prints it (`Open the console: <url>`). That is the only way to
 learn a hostname that belongs to whatever tunnel the deployment owns, and it
 means there is nothing to type in and nothing to keep in sync.
 
-Two optional overrides, named for the repository with its name uppercased
-(`APPLAB` for `shaowenchen/applab`):
+Three optional overrides. The first two are named for the repository with its
+name uppercased (`APPLAB` for `shaowenchen/applab`):
 
+- **`LABS_API_KEY`** — the one key labs calls every environment with, instead of
+  the built-in `labs-default-key`. See "What you have to do in the other
+  repositories" above for how each project is given it.
 - **`LABS_DOMAIN_APPLAB`** (or `LABS_DOMAIN_SUFFIX`, a shared suffix under which
   a repository named `applab` is served at `applab.<suffix>`) — set the address
   instead of discovering it, so an environment is reachable before its run has
   printed anything.
-- **`LABS_KEY_APPLAB`** — use a key configured out of band, for instance one you
-  rotate yourself, instead of a generated one.
+- **`LABS_KEY_APPLAB`** — use a different key for this one environment, instead
+  of the shared one.
 
 Whatever the address, it must be the hostname of a **named** Cloudflare tunnel,
 which is stable across runs; a quick tunnel is assigned a new hostname each time.
@@ -280,11 +266,12 @@ configured, and nothing is started — neither the keeper nor an on-demand start
 
 Two things are worth knowing at the top:
 
-- **labs chooses the environment's key.** Neither control plane reports its key
-  over its unauthenticated `/api/v1/config` (nor should it), so a key cannot be
-  discovered — labs generates one and hands it to the environment as the
-  dispatch's `api_key` input. A key you would rather manage yourself overrides
-  that with `LABS_KEY_<ID>`, in which case it is set on both sides and not sent.
+- **The key is fixed, not discovered.** Neither control plane reports its key
+  over its unauthenticated `/api/v1/config` (nor should it), so labs cannot read
+  it — it calls every environment with one fixed value, `LABS_API_KEY` or the
+  built-in default, and each project is given that value its own way. Fixed
+  rather than random is what lets labs reach an environment it did not itself
+  just dispatch.
 - **The domain must be stable.** labs finds an environment by polling
   `GET <domain><path>/api/v1/config`, which only works if the hostname is the
   same across runs. That is what a *named* Cloudflare tunnel gives; a quick

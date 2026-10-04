@@ -75,8 +75,9 @@ type Env struct {
 	// APIKey is the environment's own key. applab uses it to mint a per-session
 	// key; sandboxlab has only the one key, so it is handed to the caller as-is.
 	// It is never serialised — a log line or a /config response must not carry
-	// it. Empty means labs made one up and hands it to the environment through
-	// the dispatch (see ManagedKey).
+	// it. It is one fixed value (LABS_API_KEY, else a built-in default) rather
+	// than something minted per process, so that labs can reach an environment
+	// it did not itself just dispatch.
 	APIKey string `json:"-"`
 
 	// ManagedKey says labs chose this environment's key and passes it in the
@@ -95,11 +96,13 @@ type Env struct {
 // out otherwise so the workflow uses its own default. The address is then read
 // from the run log, which is how a deployment needs no domain at all.
 //
-// The api_key input is how labs chooses the environment's key and hands it over
-// at dispatch, rather than the two sides having to be configured with the same
-// value. Both projects' actions accept it; applab's debugger workflow already
-// threads it through, and sandboxlab's needs one line changed to (see the
-// README). A key configured out of band (ManagedKey false) is not sent.
+// The api_key input is only applab's. Its debugger workflow declares one and
+// threads it into the environment, so labs hands the key over and applab comes
+// up holding it. sandboxlab's workflow takes its key from the repository secret
+// SANDBOXLAB_API_KEY instead, which a dispatch cannot set, and declares no such
+// input — so sending one would be a 422 and no run at all. ManagedKey is what
+// draws that line, and it is true for exactly the kinds whose workflows take the
+// input.
 func (e Env) DispatchInputs(sessionHours string) map[string]string {
 	out := map[string]string{
 		"session_hours": sessionHours,

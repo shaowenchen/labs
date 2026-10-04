@@ -84,16 +84,19 @@ func TestRepositoryBecomesAnEnvironment(t *testing.T) {
 	if e.Domain != "applab.example.com" {
 		t.Errorf("domain = %q, want applab.example.com (derived from the suffix)", e.Domain)
 	}
-	// No key was configured, so labs chose one and will hand it to the
-	// environment in the dispatch.
-	if e.APIKey == "" {
-		t.Error("a key should have been generated when none was configured")
+	// No key was configured, so labs falls back to the fixed default — the same
+	// value on every run and across every restart, which is what lets it reach
+	// an environment it did not itself just dispatch.
+	if e.APIKey != defaultAPIKey {
+		t.Errorf("api key = %q, want the default %q", e.APIKey, defaultAPIKey)
 	}
+	// applab's workflow declares an api_key input, so the key is handed over at
+	// dispatch rather than left to the environment's own default.
 	if !e.ManagedKey {
-		t.Error("a generated key should be marked managed, so the dispatch carries it")
+		t.Error("an applab key should be marked managed, so the dispatch carries it")
 	}
-	if len(e.APIKey) != 32 {
-		t.Errorf("generated key is %d characters, want 32", len(e.APIKey))
+	if got := e.DispatchInputs("4")["api_key"]; got != defaultAPIKey {
+		t.Errorf("dispatch api_key = %q, want the default", got)
 	}
 	if e.Capacity != defaultEnvSlots || len(e.Slots) != defaultEnvSlots {
 		t.Errorf("capacity = %d, slots = %d, want %d of each", e.Capacity, len(e.Slots), defaultEnvSlots)
@@ -165,11 +168,16 @@ func TestConfiguredKeyIsUsedAsIs(t *testing.T) {
 
 // A generated key is carried in the dispatch, so the environment comes up with
 // the key labs holds.
-func TestGeneratedKeyIsCarriedInTheDispatch(t *testing.T) {
+// The default key is carried in the dispatch for applab, so the environment
+// comes up holding the key labs will mint per-app keys with.
+func TestDefaultKeyIsCarriedInTheApplabDispatch(t *testing.T) {
 	setEnv(t, nil)
 	e := mustLoad(t).Envs[0]
-	if got := e.DispatchInputs("4")["api_key"]; got != e.APIKey {
-		t.Errorf("dispatch api_key = %q, want the generated key", got)
+	if e.APIKey != defaultAPIKey {
+		t.Fatalf("api key = %q, want the default", e.APIKey)
+	}
+	if got := e.DispatchInputs("4")["api_key"]; got != defaultAPIKey {
+		t.Errorf("dispatch api_key = %q, want the default", got)
 	}
 }
 
@@ -262,17 +270,17 @@ func TestMissingRepoIsAProblem(t *testing.T) {
 	}
 }
 
-// A key left out is not a problem: labs generates one and hands it to the
-// environment. That is what lets a deployment run on a token and a repo list
-// alone.
-func TestMissingKeyIsGeneratedNotAProblem(t *testing.T) {
+// A key left out is not a problem: labs falls back to the fixed default and
+// hands it to an applab environment in the dispatch. That is what lets a
+// deployment run on a token and a repo list alone.
+func TestMissingKeyFallsBackToTheDefaultNotAProblem(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_KEY_APPLAB": ""})
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
 		t.Fatalf("a configuration without a key should still be usable, problems: %v", cfg.Problems)
 	}
-	if !cfg.Envs[0].ManagedKey || cfg.Envs[0].APIKey == "" {
-		t.Fatalf("want a generated managed key, got %+v", cfg.Envs[0])
+	if !cfg.Envs[0].ManagedKey || cfg.Envs[0].APIKey != defaultAPIKey {
+		t.Fatalf("want the default managed key, got %+v", cfg.Envs[0])
 	}
 }
 
@@ -378,11 +386,13 @@ func TestSessionTTLDefault(t *testing.T) {
 	}
 }
 
-// A sandboxlab repository gets its kind, path, and template, and — like applab
-// — a key generated for it when none is configured, which is then handed to the
-// environment in the dispatch. That is what lets both kinds be configured the
-// same way: a token and a repository list.
-func TestSandboxlabGetsAGeneratedKey(t *testing.T) {
+// A sandboxlab repository gets its kind, path, and template, and falls back to
+// the fixed default key — the same value across restarts, so labs can reach a
+// sandboxlab environment it did not itself just dispatch. That key is not sent
+// in the dispatch: sandboxlab's workflow declares no api_key input, so sending
+// one would be rejected, and the environment comes up holding the same default
+// through its own default anyway.
+func TestSandboxlabUsesTheDefaultKeyWithoutDispatchingIt(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_REPOS":               "o/sandboxlab",
 		"LABS_DOMAIN_SANDBOXLAB":   "sandboxlab-1.example.com",
@@ -393,14 +403,14 @@ func TestSandboxlabGetsAGeneratedKey(t *testing.T) {
 		t.Fatalf("a sandboxlab environment with no key should be usable, problems: %v", cfg.Problems)
 	}
 	e := cfg.Envs[0]
-	if e.APIKey == "" || !e.ManagedKey {
-		t.Fatalf("want a generated managed key, got %+v", e)
+	if e.APIKey != defaultAPIKey {
+		t.Fatalf("api key = %q, want the default %q", e.APIKey, defaultAPIKey)
 	}
-	if got := e.DispatchInputs("4")["api_key"]; got != e.APIKey {
-		t.Errorf("dispatch api_key = %q, want the generated key", got)
+	if e.ManagedKey {
+		t.Error("the sandboxlab key should not be marked managed: its workflow declares no api_key input")
 	}
-	if len(e.APIKey) != 32 {
-		t.Errorf("generated key is %d characters, want 32", len(e.APIKey))
+	if got, carried := e.DispatchInputs("4")["api_key"]; carried {
+		t.Errorf("sandboxlab dispatch carried api_key = %q, which GitHub would reject", got)
 	}
 }
 
@@ -427,17 +437,16 @@ func TestSandboxlabWithAKeyIsUsable(t *testing.T) {
 	}
 }
 
-// A sandboxlab dispatch carries the generated key, exactly as applab's does, so
-// the environment comes up holding the key labs will hand out.
-func TestSandboxlabDispatchCarriesTheGeneratedKey(t *testing.T) {
+// The sandboxlab dispatch carries the domain but not a key: the key is the
+// environment's own default on both sides, not something handed over.
+func TestSandboxlabDispatchCarriesTheDomainButNoKey(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_REPOS":             "o/sandboxlab",
 		"LABS_DOMAIN_SANDBOXLAB": "sandboxlab-1.example.com",
 	})
-	e := mustLoad(t).Envs[0]
-	inputs := e.DispatchInputs("4")
-	if inputs["api_key"] != e.APIKey {
-		t.Errorf("dispatch api_key = %q, want the generated key", inputs["api_key"])
+	inputs := mustLoad(t).Envs[0].DispatchInputs("4")
+	if _, ok := inputs["api_key"]; ok {
+		t.Errorf("sandboxlab dispatch carried api_key: %v", inputs)
 	}
 	if inputs["domain"] != "sandboxlab-1.example.com" {
 		t.Errorf("domain = %v, want the configured one", inputs["domain"])
@@ -465,5 +474,54 @@ func TestEmptyDomainSendsNoDomainInput(t *testing.T) {
 	e.Domain = "" // as a deployment with a blank override would have it
 	if _, ok := e.DispatchInputs("4")["domain"]; ok {
 		t.Errorf("an empty domain should not be sent: %v", e.DispatchInputs("4"))
+	}
+}
+
+// LABS_API_KEY pins one key for every environment, which is how a deployment
+// gives a single fixed value rather than relying on the built-in default. It is
+// dispatched to applab, whose workflow declares an api_key input, so applab
+// comes up holding it without a repository secret; sandboxlab's workflow takes
+// no such input, so its environment is expected to hold the same value already.
+func TestOneKeyForEveryEnvironment(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_REPOS":   "o/applab,o/sandboxlab",
+		"LABS_API_KEY": "one-fixed-key",
+	})
+	cfg := mustLoad(t)
+	if len(cfg.Envs) != 2 {
+		t.Fatalf("want two environments, got %d", len(cfg.Envs))
+	}
+	for _, e := range cfg.Envs {
+		if e.APIKey != "one-fixed-key" {
+			t.Errorf("%s key = %q, want the configured one", e.ID, e.APIKey)
+		}
+	}
+	applab, sandboxlab := cfg.Envs[0], cfg.Envs[1]
+	if got := applab.DispatchInputs("4")["api_key"]; got != "one-fixed-key" {
+		t.Errorf("applab dispatch api_key = %q, want the configured key", got)
+	}
+	if got, carried := sandboxlab.DispatchInputs("4")["api_key"]; carried {
+		t.Errorf("sandboxlab dispatch carried api_key = %q, which GitHub would reject", got)
+	}
+}
+
+// A per-environment key overrides the shared one, for the one environment that
+// does not use it.
+func TestPerEnvironmentKeyOverridesTheSharedOne(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_REPOS":          "o/applab,o/sandboxlab",
+		"LABS_API_KEY":        "one-fixed-key",
+		"LABS_KEY_SANDBOXLAB": "its-own-key",
+	})
+	cfg := mustLoad(t)
+	byID := map[string]string{}
+	for _, e := range cfg.Envs {
+		byID[e.ID] = e.APIKey
+	}
+	if byID["APPLAB"] != "one-fixed-key" {
+		t.Errorf("APPLAB key = %q, want the shared one", byID["APPLAB"])
+	}
+	if byID["SANDBOXLAB"] != "its-own-key" {
+		t.Errorf("SANDBOXLAB key = %q, want its own", byID["SANDBOXLAB"])
 	}
 }
