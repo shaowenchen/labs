@@ -361,10 +361,13 @@ type EnvStatus struct {
 func (m *Manager) Status(ctx context.Context) []EnvStatus {
 	out := make([]EnvStatus, 0, len(m.cfg.Envs))
 	for _, env := range m.cfg.Envs {
-		st := EnvStatus{ID: env.ID, Kind: env.Kind, Capacity: env.Capacity, Occupied: len(m.store.OccupiedSlots(env.ID))}
+		st := EnvStatus{ID: env.ID, Kind: env.Kind, Capacity: env.Capacity}
 		if env.Kind == model.KindSandboxlab {
-			// sandboxlab has no named slots; report live sessions instead.
-			st.Occupied = 0
+			// sandboxlab has no named slots; what it is carrying is its live
+			// sessions, counted the same way its capacity is.
+			st.Occupied = len(m.liveFor(env.ID))
+		} else {
+			st.Occupied = len(m.store.OccupiedSlots(env.ID))
 		}
 		if drv := m.drivers[env.Kind]; drv != nil {
 			r := m.envReady(ctx, drv, env)

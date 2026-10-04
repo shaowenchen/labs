@@ -70,6 +70,8 @@ const consoleHTML = `<!doctype html>
   <p class="lead">Get a working environment for a couple of hours.</p>
   <div id="actions"></div>
   <div id="out"></div>
+  <h2 id="mine-title" hidden>Your labs</h2>
+  <div id="mine"></div>
   <div id="status"></div>
   <h2 id="envs-title" hidden>Cluster status</h2>
   <div id="envs"></div>
@@ -81,6 +83,8 @@ const status = document.getElementById('status');
 const envs = document.getElementById('envs');
 const envsTitle = document.getElementById('envs-title');
 const actions = document.getElementById('actions');
+const mine = document.getElementById('mine');
+const mineTitle = document.getElementById('mine-title');
 const build = document.getElementById('build');
 function row(k, v, cls) {
   const d = document.createElement('div'); d.className = 'row' + (cls ? ' ' + cls : '');
@@ -126,7 +130,10 @@ function renderEnvs(list) {
     // counted rather than calling everything an app.
     if (e.capacity) {
       const what = e.kind === 'sandboxlab' ? 'sandboxes' : 'application slots';
-      box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.occupied + ' of ' + e.capacity + ' ' + what + ' in use' }));
+      let line = e.occupied + ' of ' + e.capacity + ' ' + what + ' in use';
+      const yours = mineHolding(e.kind);
+      if (yours) line += ' · ' + yours + ' yours';
+      box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: line }));
     }
     if (e.console_url) {
       const u = document.createElement('div'); u.className = 'msg';
@@ -165,6 +172,86 @@ function setFooter(b) {
   if (b.build_time && b.build_time !== 'unknown') parts.push(new Date(b.build_time).toLocaleString());
   build.textContent = parts.join(' · ');
 }
+// countdown is how long a lab has left, as "1h 57m" or "3m 12s". It is the
+// product's promise, so it is shown counting down rather than as an end time
+// the reader has to subtract from.
+function countdown(expiresAt) {
+  let s = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000);
+  if (s <= 0) return 'expired';
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  s = s % 60;
+  if (h) return h + 'h ' + String(m).padStart(2, '0') + 'm';
+  if (m) return m + 'm ' + String(s).padStart(2, '0') + 's';
+  return s + 's';
+}
+// mine are the sessions this browser asked for. They are kept in sessionStorage
+// so a reload keeps showing them — the service never returns a key again, and
+// the list is what the caller uses to watch a lab expire without having kept
+// the key. Nothing here is trusted: the server is the authority on expiry.
+let myLabs = [];
+try { myLabs = JSON.parse(sessionStorage.getItem('labs.mine') || '[]'); } catch (e) { myLabs = []; }
+function remember(d) {
+  myLabs = myLabs.filter(l => l.session_id !== d.session_id);
+  myLabs.unshift({ session_id: d.session_id, kind: d.kind, console_url: d.console_url, expires_at: d.expires_at });
+  saveLabs();
+  renderMine();
+}
+function forget(id) {
+  myLabs = myLabs.filter(l => l.session_id !== id);
+  saveLabs();
+  renderMine();
+}
+function saveLabs() {
+  try { sessionStorage.setItem('labs.mine', JSON.stringify(myLabs)); } catch (e) { /* private mode: keep it in memory */ }
+}
+// mineHolding counts this browser's labs of a kind that have not expired, so the
+// cluster line can say how many of the slots in use are the reader's own.
+function mineHolding(kind) {
+  const now = Date.now();
+  return myLabs.filter(l => l.kind === kind && new Date(l.expires_at).getTime() > now).length;
+}
+// renderMine lists the labs this browser holds, with a live countdown each. It
+// never shows a key — a lab's key is shown once, at creation, and this list
+// exists precisely so that it does not have to be shown again.
+function renderMine() {
+  mine.replaceChildren();
+  mineTitle.hidden = !myLabs.length;
+  myLabs.forEach(l => {
+    const box = document.createElement('div'); box.className = 'env';
+    const top = document.createElement('div'); top.className = 'top';
+    const name = document.createElement('span'); name.className = 'name'; name.textContent = l.kind || 'lab';
+    const left = document.createElement('span'); left.className = 'meta'; left.dataset.expires = l.expires_at;
+    const end = document.createElement('button'); end.className = 'small'; end.textContent = 'End';
+    end.style.marginLeft = 'auto';
+    end.onclick = async () => {
+      end.disabled = true;
+      try { await fetchJSON('api/v1/labs/' + encodeURIComponent(l.session_id), { method: 'DELETE' }); } catch (e) { /* show it gone regardless */ }
+      forget(l.session_id);
+      loadStatus();
+    };
+    top.append(name, document.createTextNode(' '), left, end);
+    box.append(top);
+    if (l.console_url) {
+      const u = document.createElement('div'); u.className = 'msg';
+      const a = document.createElement('a'); a.href = l.console_url; a.textContent = l.console_url; a.target = '_blank'; a.rel = 'noopener';
+      u.append(a); box.append(u);
+    }
+    mine.append(box);
+  });
+  tick();
+}
+// tick refreshes every countdown on the page from the current time. It runs on
+// its own one-second timer and reads the data-expires values rather than
+// re-rendering, so the list does not flicker under the pointer.
+function tick() {
+  document.querySelectorAll('#mine [data-expires]').forEach(e => {
+    e.textContent = 'expires in ' + countdown(e.dataset.expires);
+  });
+  document.querySelectorAll('#out [data-expires]').forEach(e => {
+    e.textContent = new Date(e.dataset.expires).toLocaleString() + ' · ' + countdown(e.dataset.expires);
+  });
+}
+setInterval(tick, 1000);
 let configured = true;
 // fetchJSON fetches with a deadline, so a slow or hung endpoint cannot leave
 // the page blank — it fails, and the caller shows why.
@@ -188,6 +275,7 @@ async function loadStatus() {
     const { body } = await fetchJSON('api/v1/config');
     const cfg = body.data || {};
     setFooter(cfg);
+    renderMine();
     renderEnvs(cfg.environments);
     configured = cfg.configured !== false;
     // A button per ready kind, so either kind can be asked for; before one is
@@ -222,18 +310,22 @@ async function requestLab(kind, btn) {
       return;
     }
     const d = body.data;
+    // The key is shown here and only here. It is the deliverable, shown once at
+    // the hand-off; the list below deliberately never carries it.
     out.append(row('console', '<a href="' + d.console_url + '" target="_blank" rel="noopener">' + d.console_url + '</a>'));
     out.append(row('api key', '<code>' + (d.api_key || '(none)') + '</code>'));
-    out.append(row('expires', new Date(d.expires_at).toLocaleString()));
+    out.append(row('expires', '<span data-expires="' + d.expires_at + '"></span>'));
     if (d.app) out.append(row('app', '<code>' + d.app + '</code>'));
     if (d.warning) out.append(row('note', d.warning, 'warn'));
     out.append(row('how', kind === 'sandboxlab' ? 'Open the link; the key is already in it.' : 'Open the console and paste the key.'));
+    remember(d);
   } catch (e) {
     out.append(row('error', String(e), 'err'));
   } finally {
     btn.disabled = false;
   }
 }
+renderMine(); // show this browser's labs immediately, before the first fetch
 loadStatus();
 // Poll, so an environment that is booting becomes a lab without a reload. The
 // interval is short enough to feel live and long enough not to hammer.
