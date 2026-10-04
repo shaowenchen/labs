@@ -561,7 +561,7 @@ func splitList(v string) []string {
 //
 // It is the same value everywhere so a deployment needs no variables at all:
 // labs sends it as the dispatch's api_key, and each project comes up holding it.
-const defaultAPIKey = "ACTION_API_KEY"
+const defaultAPIKey = "labs-default-key"
 
 // defaultRepos are the repositories this service drives when LABS_REPOS says
 // nothing: the two projects whose debugger environments it hands out, one

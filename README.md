@@ -163,7 +163,7 @@ on the domain as well) plus a second repository, not a labs setting.
 
 **One key, sent in every dispatch.** labs calls every environment with one fixed
 key — `LABS_ACTION_API_KEY` if you set it, otherwise the built-in default
-`ACTION_API_KEY` — and passes it as the `api_key` input on every dispatch.
+`labs-default-key` — and passes it as the `api_key` input on every dispatch.
 That one key is all it takes to drive any lab action: applab's workflow threads
 it through (`inputs.api_key || secrets.APPLAB_API_KEY`), and the debugger
 environment comes up holding it. There is nothing per-repository to configure.
@@ -224,7 +224,7 @@ Three optional overrides. The first two are named for the repository with its
 name uppercased (`APPLAB` for `shaowenchen/applab`):
 
 - **`LABS_ACTION_API_KEY`** — the one key labs calls every environment with, instead of
-  the built-in `ACTION_API_KEY`. See "What you have to do in the other
+  the built-in `labs-default-key`. See "What you have to do in the other
   repositories" above for how each project is given it.
 - **`LABS_DOMAIN_APPLAB`** (or `LABS_DOMAIN_SUFFIX`, a shared suffix under which
   a repository named `applab` is served at `applab.<suffix>`) — set the address
