@@ -69,7 +69,7 @@ const consoleHTML = `<!doctype html>
 <main>
   <h1>labs</h1>
   <p class="lead">Get a working environment for a couple of hours.</p>
-  <button id="go" hidden>Get a lab</button>
+  <div id="actions"></div>
   <div id="out"></div>
   <div id="status"></div>
   <h2 id="envs-title" hidden>Cluster status</h2>
@@ -81,7 +81,7 @@ const out = document.getElementById('out');
 const status = document.getElementById('status');
 const envs = document.getElementById('envs');
 const envsTitle = document.getElementById('envs-title');
-const go = document.getElementById('go');
+const actions = document.getElementById('actions');
 const build = document.getElementById('build');
 function row(k, v, cls) {
   const d = document.createElement('div'); d.className = 'row' + (cls ? ' ' + cls : '');
@@ -157,6 +157,28 @@ function keyEntry(id) {
   box.append(input, btn, note);
   return box;
 }
+// renderActions offers one button per ready kind, so a deployment serving both
+// applab and sandboxlab can hand out either. The button asks for the kind it
+// names; a deployment with one kind therefore gets one button, which is the
+// same shape as before. Nothing is offered while no cluster is up — the status
+// list below already says one is starting.
+function renderActions(list) {
+  const readyKinds = [];
+  (list || []).forEach(e => {
+    if (e.ready && e.kind && readyKinds.indexOf(e.kind) < 0) readyKinds.push(e.kind);
+  });
+  const want = readyKinds.join(',');
+  if (actions.dataset.kinds === want) return; // nothing changed; leave the buttons
+  actions.dataset.kinds = want;
+  actions.replaceChildren();
+  readyKinds.forEach(kind => {
+    const b = document.createElement('button');
+    b.textContent = 'Get a ' + kind + ' lab';
+    b.style.marginRight = '.5rem';
+    b.onclick = () => requestLab(kind, b);
+    actions.append(b);
+  });
+}
 function setFooter(b) {
   const parts = [];
   if (b.commit) parts.push('commit ' + b.commit);
@@ -187,9 +209,9 @@ async function loadStatus() {
     setFooter(cfg);
     renderEnvs(cfg.environments);
     configured = cfg.configured !== false;
-    // The lab button is offered only when there is a cluster to serve it;
-    // before that the status area already says a cluster is starting.
-    go.hidden = !(configured && (cfg.environments || []).some(e => e.ready));
+    // A button per ready kind, so either kind can be asked for; before one is
+    // up there is nothing to offer and the status list says why.
+    renderActions(configured ? cfg.environments : []);
     if (!configured && (cfg.problems || []).length) {
       status.replaceChildren(problems(cfg.problems));
     } else {
@@ -199,13 +221,17 @@ async function loadStatus() {
     // Say so rather than showing nothing, which is what a silent failure looks
     // like: the cluster status simply never appears.
     status.replaceChildren(row('status', 'could not reach the service: ' + e.message, 'err'));
-    go.hidden = true;
+    renderActions([]);
   }
 }
-go.onclick = async () => {
-  go.disabled = true; out.replaceChildren();
+// requestLab asks for one lab of the named kind — the kind is what the button
+// says, so a deployment serving both hands out whichever was pressed, rather
+// than always the first.
+async function requestLab(kind, btn) {
+  btn.disabled = true; out.replaceChildren();
   try {
-    const { ok, status: code, body } = await fetchJSON('api/v1/labs', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' });
+    const { ok, status: code, body } = await fetchJSON('api/v1/labs', {
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ kind: kind }) });
     if (!ok) {
       const d = row('error', document.createTextNode(body.error || ('HTTP ' + code)).textContent, 'err');
       if (body.retryable) d.append(Object.assign(document.createElement('span'), { textContent: ' (retryable)' }));
@@ -220,13 +246,13 @@ go.onclick = async () => {
     out.append(row('expires', new Date(d.expires_at).toLocaleString()));
     if (d.app) out.append(row('app', '<code>' + d.app + '</code>'));
     if (d.warning) out.append(row('note', d.warning, 'warn'));
-    out.append(row('how', 'Open the console and paste the key.'));
+    out.append(row('how', kind === 'sandboxlab' ? 'Open the link; the key is already in it.' : 'Open the console and paste the key.'));
   } catch (e) {
     out.append(row('error', String(e), 'err'));
   } finally {
-    go.disabled = false;
+    btn.disabled = false;
   }
-};
+}
 loadStatus();
 // Poll, so an environment that is booting becomes a lab without a reload. The
 // interval is short enough to feel live and long enough not to hammer.
