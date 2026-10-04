@@ -357,18 +357,18 @@ type EnvStatus struct {
 	Unauthorized bool
 }
 
-// Status reports every environment's readiness.
+// Status reports every environment's readiness and what it is running.
+//
+// Occupied is counted from the environment itself, not from this service's
+// records: the instances are the truth, and a service that restarted has
+// forgotten its sessions while the apps and sandboxes it made are still running.
+// The service's own record is used only as the fallback when the environment
+// cannot be read — better a number from a stale record than a zero that looks
+// like an empty cluster.
 func (m *Manager) Status(ctx context.Context) []EnvStatus {
 	out := make([]EnvStatus, 0, len(m.cfg.Envs))
 	for _, env := range m.cfg.Envs {
-		st := EnvStatus{ID: env.ID, Kind: env.Kind, Capacity: env.Capacity}
-		if env.Kind == model.KindSandboxlab {
-			// sandboxlab has no named slots; what it is carrying is its live
-			// sessions, counted the same way its capacity is.
-			st.Occupied = len(m.liveFor(env.ID))
-		} else {
-			st.Occupied = len(m.store.OccupiedSlots(env.ID))
-		}
+		st := EnvStatus{ID: env.ID, Kind: env.Kind, Capacity: env.Capacity, Occupied: m.occupied(ctx, env)}
 		if drv := m.drivers[env.Kind]; drv != nil {
 			r := m.envReady(ctx, drv, env)
 			st.Ready = r.Ready
@@ -377,6 +377,60 @@ func (m *Manager) Status(ctx context.Context) []EnvStatus {
 			st.Unauthorized = r.Unauthorized
 		}
 		out = append(out, st)
+	}
+	return out
+}
+
+// occupied is how many instances an environment is running, read from the
+// environment. It is an instance count, not a session count, so it needs no
+// per-kind rule: an applab app and a sandboxlab sandbox are both one instance.
+func (m *Manager) occupied(ctx context.Context, env model.Env) int {
+	drv := m.drivers[env.Kind]
+	if drv == nil {
+		return m.recorded(env)
+	}
+	live, err := drv.Live(ctx, env)
+	if err != nil {
+		m.log.Warn("could not list an environment's running instances", "env", env.ID, "error", err)
+		return m.recorded(env)
+	}
+	return len(live)
+}
+
+// recorded is the fallback count, from this service's own store: applab's named
+// slots, or sandboxlab's live sessions.
+func (m *Manager) recorded(env model.Env) int {
+	if env.Kind == model.KindSandboxlab {
+		return len(m.liveFor(env.ID))
+	}
+	return len(m.store.OccupiedSlots(env.ID))
+}
+
+// LiveLabs is what an environment is running, for the page. It is the driver's
+// list, so it reflects the environment rather than this service's memory, and
+// it carries no credential.
+type LiveLabs struct {
+	EnvID string
+	Kind  model.Kind
+	Items []driver.Live
+}
+
+// Live reports every environment's running instances, in environment order.
+// An environment that cannot be read yields an empty list rather than an error:
+// the page should show the others, and the count already falls back to the
+// service's record.
+func (m *Manager) Live(ctx context.Context) []LiveLabs {
+	out := make([]LiveLabs, 0, len(m.cfg.Envs))
+	for _, env := range m.cfg.Envs {
+		entry := LiveLabs{EnvID: env.ID, Kind: env.Kind}
+		if drv := m.drivers[env.Kind]; drv != nil {
+			items, err := drv.Live(ctx, env)
+			if err != nil {
+				m.log.Warn("could not list an environment's running instances", "env", env.ID, "error", err)
+			}
+			entry.Items = items
+		}
+		out = append(out, entry)
 	}
 	return out
 }

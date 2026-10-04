@@ -26,6 +26,7 @@ type fakeSvc struct {
 	released  []string
 	readyAny  bool
 	status    []session.EnvStatus
+	live      []session.LiveLabs
 }
 
 func (f *fakeSvc) Provision(_ context.Context, kind model.Kind, ip string) (session.Result, error) {
@@ -41,6 +42,7 @@ func (f *fakeSvc) Release(_ context.Context, id string) error {
 }
 func (f *fakeSvc) Status(context.Context) []session.EnvStatus { return f.status }
 func (f *fakeSvc) ReadyAny(context.Context) bool              { return f.readyAny }
+func (f *fakeSvc) Live(context.Context) []session.LiveLabs    { return f.live }
 
 func testConfig() config.Config {
 	return config.Config{

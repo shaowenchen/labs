@@ -202,6 +202,50 @@ func (d *Driver) Release(ctx context.Context, env model.Env, sess model.Session)
 	return nil
 }
 
+// Live lists the apps this service's slots are actually running. It is scoped
+// to the configured slots — an app a person made by hand is not this service's
+// to report — and reads the state from the cluster, so it reflects what is
+// running rather than what the service last recorded.
+//
+// A slot whose app is still "created" is skipped: that state is applab's way of
+// saying the record exists and nothing is running for it, which is exactly what
+// an idle, pre-made slot is. Everything else — building, deploying, running, or
+// a failure — is a lab someone is using, so it counts and it is shown.
+//
+// No key is read or returned: the key is a separate route (/key), and a listing
+// that carried it would hand out a credential per row. ExpiresAt is left zero —
+// an applab app has no expiry of its own, so the caller applies the session's
+// clock (created plus the TTL).
+func (d *Driver) Live(ctx context.Context, env model.Env) ([]driver.Live, error) {
+	// GET /api/v1/apps answers {"data":[ ... ]} — the data value is the array
+	// itself, not an object wrapping one.
+	var apps []struct {
+		ID        string    `json:"id"`
+		Status    string    `json:"status"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	if err := d.call(ctx, env, http.MethodGet, "/api/v1/apps", env.APIKey, nil, &apps, false); err != nil {
+		return nil, fmt.Errorf("applab: list apps: %w", err)
+	}
+
+	want := map[string]bool{}
+	for _, slot := range env.Slots {
+		want[slot] = true
+	}
+	live := make([]driver.Live, 0, len(apps))
+	for _, a := range apps {
+		if !want[a.ID] || a.Status == appStatusCreated {
+			continue
+		}
+		live = append(live, driver.Live{ID: a.ID, State: a.Status, CreatedAt: a.CreatedAt})
+	}
+	return live, nil
+}
+
+// appStatusCreated is applab's "the record exists, nothing is running". An idle
+// slot sits here until a lab pushes something into it.
+const appStatusCreated = "created"
+
 // Reconcile rotates and stops every slot app that no live session holds.
 //
 // It considers only the environment's configured slots: an app a person created

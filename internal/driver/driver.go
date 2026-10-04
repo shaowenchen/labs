@@ -10,6 +10,7 @@ package driver
 
 import (
 	"context"
+	"time"
 
 	"github.com/shaowenchen/labs/internal/model"
 )
@@ -64,6 +65,25 @@ type Provisioned struct {
 	Warning string
 }
 
+// Live is one instance an environment is actually running — an applab app or a
+// sandboxlab sandbox — as the environment reports it. It is read from the
+// environment rather than from this service's records, so it is the truth even
+// across a restart of labs, and it deliberately carries no credential.
+type Live struct {
+	// ID is the instance's identity: the app id, or the sandbox id.
+	ID string
+
+	// State is what the environment calls its state, for a list that wants to
+	// show it ("running", "stopped").
+	State string
+
+	// CreatedAt is when the instance was made, and ExpiresAt when it ends. An
+	// environment that has no expiry of its own leaves ExpiresAt zero, and the
+	// reader falls back to the session's own clock.
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
 // Driver drives one kind of environment.
 //
 // Every method takes the environment it acts on, rather than the driver holding
@@ -94,6 +114,13 @@ type Driver interface {
 	// kind without slots. It is called at warm-up rather than per request so
 	// that the request path stays fast.
 	EnsureSlot(ctx context.Context, env model.Env, app string) error
+
+	// Live lists the instances the environment is actually running. It is what
+	// the page shows, which is why it is read from the environment rather than
+	// from this service's own records: a service that restarted has forgotten
+	// its sessions, and the instances are still there. It must carry no
+	// credential.
+	Live(ctx context.Context, env model.Env) ([]Live, error)
 
 	// Reconcile ends anything the environment is still running that is not one
 	// of the given live sessions — the pass that cleans up after this service

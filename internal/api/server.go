@@ -25,6 +25,10 @@ type SessionService interface {
 	Release(ctx context.Context, id string) error
 	Status(ctx context.Context) []session.EnvStatus
 	ReadyAny(ctx context.Context) bool
+
+	// Live reports what each environment is running, read from the environment
+	// itself so it survives a restart of this service.
+	Live(ctx context.Context) []session.LiveLabs
 }
 
 // Deps is what the server needs.

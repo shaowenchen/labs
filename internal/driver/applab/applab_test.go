@@ -22,8 +22,9 @@ type fakeAppLab struct {
 	calls     []string
 	key       string
 	refuseKey bool
-	conflict  bool   // POST /apps answers 409, as it does for an existing app
-	health    string // the health route to serve; "/healthz" exercises the fallback
+	conflict  bool             // POST /apps answers 409, as it does for an existing app
+	health    string           // the health route to serve; "/healthz" exercises the fallback
+	apps      []map[string]any // what GET /apps answers
 }
 
 func (f *fakeAppLab) record(call string) {
@@ -65,7 +66,11 @@ func (f *fakeAppLab) server(base string) *httptest.Server {
 			_, _ = w.Write([]byte(`{"error":"invalid key"}`))
 			return
 		}
-		writeData(w, http.StatusOK, []any{})
+		apps := f.apps
+		if apps == nil {
+			apps = []map[string]any{}
+		}
+		writeData(w, http.StatusOK, apps)
 	})
 	mux.HandleFunc("POST /api/v1/apps", func(w http.ResponseWriter, r *http.Request) {
 		f.record("create")
@@ -319,5 +324,35 @@ func TestLongErrorBodyIsShortened(t *testing.T) {
 	// A real, short error is left exactly as it came.
 	if got := briefBody([]byte(`  {"error":"invalid key"}  `)); got != `{"error":"invalid key"}` {
 		t.Errorf("briefBody(%q) = %q, want it unchanged and trimmed", `{"error":"invalid key"}`, got)
+	}
+}
+
+// Live reports the slots that are actually running, and only those: an app
+// still in "created" is a pre-made slot with nothing behind it, which is what
+// an idle slot is, so it is not a running lab and must not be counted.
+func TestLiveSkipsCreatedSlots(t *testing.T) {
+	f := &fakeAppLab{apps: []map[string]any{
+		{"id": "lab-01", "status": "created", "created_at": "2026-10-04T13:00:00Z"},
+		{"id": "lab-02", "status": "running", "created_at": "2026-10-04T13:05:00Z"},
+		{"id": "someone-else", "status": "running", "created_at": "2026-10-04T13:06:00Z"},
+	}}
+	srv := f.server("/applab")
+	defer srv.Close()
+	env := envWithURL(srv.URL, "/applab")
+	env.Slots = []string{"lab-01", "lab-02"}
+
+	got, err := newDriver(t).Live(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "lab-02" {
+		t.Fatalf("Live = %+v, want only the running slot lab-02", got)
+	}
+	if got[0].State != "running" || got[0].CreatedAt.IsZero() {
+		t.Errorf("Live[0] = %+v, want its state and creation time", got[0])
+	}
+	// An applab app has no expiry of its own; the caller applies the session clock.
+	if !got[0].ExpiresAt.IsZero() {
+		t.Errorf("applab Live should carry no expiry, got %s", got[0].ExpiresAt)
 	}
 }

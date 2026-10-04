@@ -17,6 +17,8 @@ import (
 
 // fakeDriver records what it was asked to do, and can be told to fail.
 type fakeDriver struct {
+	live         []driver.Live
+	liveErr      error
 	mu           sync.Mutex
 	provisioned  []string // app ids
 	released     []string
@@ -52,6 +54,12 @@ func (f *fakeDriver) Release(_ context.Context, _ model.Env, s model.Session) er
 }
 
 func (f *fakeDriver) EnsureSlot(context.Context, model.Env, string) error { return nil }
+
+func (f *fakeDriver) Live(context.Context, model.Env) ([]driver.Live, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.live, f.liveErr
+}
 
 func (f *fakeDriver) Reconcile(context.Context, model.Env, []model.Session) error {
 	f.mu.Lock()
@@ -308,40 +316,34 @@ func TestProvisionWithoutAStarterReportsNoEnvironment(t *testing.T) {
 	}
 }
 
-// Both kinds report how many of their slots are in use. For applab that is the
-// named slots it has handed out; for sandboxlab, which has none, it is the live
-// sessions — which is what its capacity is counted in, so the two lines the
-// page shows mean the same thing.
-func TestStatusReportsOccupiedForBothKinds(t *testing.T) {
-	drv := &fakeDriver{ready: true}
-	cfg := testConfig()
-	cfg.Envs[0].ID = "APPLAB"
-	cfg.Envs = append(cfg.Envs, model.Env{
-		ID: "SANDBOXLAB", Kind: model.KindSandboxlab, Repo: "o/sandboxlab",
-		Workflow: "debugger.yml", Domain: "sb.example.com", BasePath: "/sandbox", Capacity: 4,
-		APIKey: "k",
-	})
-	st := store.New()
-	m := New(cfg, st, map[model.Kind]driver.Driver{
-		model.KindApplab: drv, model.KindSandboxlab: drv,
-	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	m.WithClock(func() time.Time { return time.Now() })
+// Occupied is counted from what the environment is actually running, not from
+// this service's records — so a restart does not make a busy cluster read as
+// empty. The driver's list is the source; the store is only the fallback for an
+// environment that cannot be read.
+func TestStatusCountsWhatTheEnvironmentIsRunning(t *testing.T) {
+	drv := &fakeDriver{ready: true, live: []driver.Live{{ID: "lab-01"}, {ID: "lab-02"}}}
+	m, _ := testManager(t, drv, testConfig())
+
+	// Nothing has been provisioned by this process — as after a restart — yet
+	// the environment reports two instances, so that is the count.
+	got := m.Status(context.Background())
+	if len(got) != 1 || got[0].Occupied != 2 {
+		t.Fatalf("occupied = %v, want 2 from the environment's own list", got)
+	}
+}
+
+// An environment that cannot be read falls back to this service's record,
+// because a stale number beats a zero that looks like an empty cluster.
+func TestStatusFallsBackToTheRecordedCount(t *testing.T) {
+	drv := &fakeDriver{ready: true, liveErr: errors.New("unreachable")}
+	m, _ := testManager(t, drv, testConfig())
 
 	if _, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Provision(context.Background(), model.KindSandboxlab, "2.2.2.2"); err != nil {
-		t.Fatal(err)
-	}
 
-	got := map[string]int{}
-	for _, st := range m.Status(context.Background()) {
-		got[st.ID] = st.Occupied
-	}
-	if got["APPLAB"] != 1 {
-		t.Errorf("applab occupied = %d, want 1", got["APPLAB"])
-	}
-	if got["SANDBOXLAB"] != 1 {
-		t.Errorf("sandboxlab occupied = %d, want 1 (a live session is what it counts)", got["SANDBOXLAB"])
+	got := m.Status(context.Background())
+	if len(got) != 1 || got[0].Occupied != 1 {
+		t.Fatalf("occupied = %v, want 1 from the recorded slot", got)
 	}
 }

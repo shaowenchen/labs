@@ -175,6 +175,36 @@ func (d *Driver) Release(ctx context.Context, env model.Env, sess model.Session)
 // because the interface has it for the kinds that do.
 func (d *Driver) EnsureSlot(context.Context, model.Env, string) error { return nil }
 
+// Live lists the sandboxes this service is running. It is scoped to the prefix
+// this service names its sandboxes with, so a sandbox someone made by hand with
+// the shared key is not reported as one of ours.
+//
+// Unlike an applab app, a sandboxlab sandbox carries its own clock: CreatedAt
+// and ExpiresAt are the sandbox's, not a session record's, so they are right
+// even for a sandbox this process did not create.
+func (d *Driver) Live(ctx context.Context, env model.Env) ([]driver.Live, error) {
+	var out struct {
+		Sandboxes []struct {
+			ID        string    `json:"id"`
+			State     string    `json:"state"`
+			CreatedAt time.Time `json:"createdAt"`
+			ExpiresAt time.Time `json:"expiresAt"`
+		} `json:"sandboxes"`
+	}
+	if err := d.call(ctx, env, http.MethodGet, "/api/v1/sandboxes", env.APIKey, nil, &out, false); err != nil {
+		return nil, fmt.Errorf("sandboxlab: list sandboxes: %w", err)
+	}
+
+	live := make([]driver.Live, 0, len(out.Sandboxes))
+	for _, sb := range out.Sandboxes {
+		if !strings.HasPrefix(sb.ID, sandboxPrefix) {
+			continue
+		}
+		live = append(live, driver.Live{ID: sb.ID, State: sb.State, CreatedAt: sb.CreatedAt, ExpiresAt: sb.ExpiresAt})
+	}
+	return live, nil
+}
+
 // Reconcile deletes any of this service's sandboxes that no live session holds.
 //
 // It only ever deletes a sandbox whose id begins with the prefix this service
