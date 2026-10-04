@@ -22,7 +22,8 @@ type fakeAppLab struct {
 	calls     []string
 	key       string
 	refuseKey bool
-	conflict  bool // POST /apps answers 409, as it does for an existing app
+	conflict  bool   // POST /apps answers 409, as it does for an existing app
+	health    string // the health route to serve; "/healthz" exercises the fallback
 }
 
 func (f *fakeAppLab) record(call string) {
@@ -39,13 +40,21 @@ func (f *fakeAppLab) order() []string {
 
 func (f *fakeAppLab) server(base string) *httptest.Server {
 	mux := http.NewServeMux()
+	// applab serves its health route at /health, not /healthz — the two are
+	// different paths and only one of them exists. The default fake serves the
+	// real one, so a driver that probed the wrong path alone would fail here;
+	// f.health moves it to /healthz for the fallback test.
+	healthRoute := f.health
+	if healthRoute == "" {
+		healthRoute = "/health"
+	}
+	mux.HandleFunc("GET "+healthRoute, func(w http.ResponseWriter, r *http.Request) {
+		f.record("health")
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	})
 	mux.HandleFunc("GET /api/v1/config", func(w http.ResponseWriter, r *http.Request) {
 		f.record("config")
 		writeData(w, http.StatusOK, map[string]any{"api_version": "v1", "version": "test"})
-	})
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		f.record("healthz")
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 	// The keyed probe Ready makes to tell "usable" from "key refused". The
 	// 401/403 behaviour is set by the test through f.refuseKey.
@@ -130,6 +139,24 @@ func TestReadyParsesConfig(t *testing.T) {
 	}
 	if r.ConsoleURL != env.BaseURL() {
 		t.Errorf("ConsoleURL = %q, want %q", r.ConsoleURL, env.BaseURL())
+	}
+}
+
+func TestReadyFallsBackToHealthz(t *testing.T) {
+	// A deployment that answers at /healthz rather than /health must still be
+	// read as up: the probe tries /health first and falls back, so the route the
+	// environment actually serves is not mistaken for a dead one.
+	f := &fakeAppLab{health: "/healthz"}
+	srv := f.server("/applab")
+	defer srv.Close()
+	env := envWithURL(srv.URL, "/applab")
+
+	r, err := newDriver(t).Ready(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if !r.Ready {
+		t.Fatalf("Ready = false for a server whose health route is /healthz: %s", r.Message)
 	}
 }
 

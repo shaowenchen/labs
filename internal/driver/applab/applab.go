@@ -64,10 +64,14 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 		return driver.Ready{Message: "the config response carried no api_version"}, nil
 	}
 
-	// healthz is cheap and is what a deployment that is up but not ready fails.
-	var health json.RawMessage
-	if err := d.call(ctx, env, http.MethodGet, "/healthz", "", nil, &health, false); err != nil {
-		return driver.Ready{Message: "healthz: " + err.Error()}, nil
+	// The health route is cheap and is what a deployment that is up but not
+	// ready fails. applab serves it at /health (a kubelet probe path, matched as
+	// a suffix so the base path is included); /healthz is tried second, because
+	// a build that answers there should not be read as down. The first probe
+	// that answers 200 wins, and a body that will not decode is not a failure
+	// here — a 200 is the answer this is asking for.
+	if err := d.healthy(ctx, env); err != nil {
+		return driver.Ready{Message: "health: " + err.Error()}, nil
 	}
 
 	// A keyed call: it is what says whether the key this service holds is the
@@ -84,6 +88,32 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 		return driver.Ready{Message: "apps: " + err.Error()}, nil
 	}
 	return driver.Ready{Ready: true, ConsoleURL: env.BaseURL()}, nil
+}
+
+// healthy probes the environment's health route without a key.
+//
+// applab serves it at /health — the path its own kubelet probe uses, matched as
+// a suffix so it sits under the base path too. /healthz is tried as well, so a
+// deployment that answers there (or a build that moved the route) is not read
+// as down; the first 200 ends the search. Only a status that is not a 200, or a
+// refused connection, is a failure — the body is not decoded, because a 200 is
+// already the answer.
+func (d *Driver) healthy(ctx context.Context, env model.Env) error {
+	var firstErr error
+	for _, route := range []string{"/health", "/healthz"} {
+		err := d.call(ctx, env, http.MethodGet, route, "", nil, nil, false)
+		if err == nil {
+			return nil
+		}
+		// A 401/403 means the route answered but wanted a key, which is still up.
+		if isUnauthorized(err) {
+			return nil
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // EnsureSlot makes sure an app record exists for the slot, so a later Provision
