@@ -75,18 +75,9 @@ type Env struct {
 	// APIKey is the environment's own key. applab uses it to mint a per-session
 	// key; sandboxlab has only the one key, so it is handed to the caller as-is.
 	// It is never serialised — a log line or a /config response must not carry
-	// it. It is one fixed value (LABS_API_KEY, else a built-in default) rather
-	// than something minted per process, so that labs can reach an environment
-	// it did not itself just dispatch.
+	// it. It is one fixed value, the same for every environment, so that labs
+	// can call any of them, including one it did not itself just dispatch.
 	APIKey string `json:"-"`
-
-	// ManagedKey says labs chose this environment's key and passes it in the
-	// dispatch, rather than the environment having been configured with a key
-	// out of band. It is what decides whether the dispatch carries an api_key
-	// input — which matters because GitHub rejects a dispatch carrying an input
-	// the workflow does not declare, so a workflow must be updated to accept it
-	// before labs can manage its key.
-	ManagedKey bool `json:"-"`
 }
 
 // DispatchInputs is the workflow_dispatch input map for this environment.
@@ -96,13 +87,12 @@ type Env struct {
 // out otherwise so the workflow uses its own default. The address is then read
 // from the run log, which is how a deployment needs no domain at all.
 //
-// The api_key input is only applab's. Its debugger workflow declares one and
-// threads it into the environment, so labs hands the key over and applab comes
-// up holding it. sandboxlab's workflow takes its key from the repository secret
-// SANDBOXLAB_API_KEY instead, which a dispatch cannot set, and declares no such
-// input — so sending one would be a 422 and no run at all. ManagedKey is what
-// draws that line, and it is true for exactly the kinds whose workflows take the
-// input.
+// The api_key input is the key itself, and it is sent on every dispatch. Both
+// projects' debugger workflows take it — applab as a workflow_dispatch input,
+// sandboxlab through the action — so one key configured here is what labs calls
+// every kind with. A workflow that has not declared the input rejects the
+// dispatch outright (GitHub answers 422 and no run starts), which is a loud,
+// immediate failure rather than a silent one.
 func (e Env) DispatchInputs(sessionHours string) map[string]string {
 	out := map[string]string{
 		"session_hours": sessionHours,
@@ -111,7 +101,7 @@ func (e Env) DispatchInputs(sessionHours string) map[string]string {
 	if e.Domain != "" {
 		out["domain"] = e.Domain
 	}
-	if e.ManagedKey && e.APIKey != "" {
+	if e.APIKey != "" {
 		out["api_key"] = e.APIKey
 	}
 	return out

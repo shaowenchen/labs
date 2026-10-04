@@ -172,27 +172,24 @@ domains and the keeper holds them in antiphase.
 
 ## What you have to do in the other repositories
 
-**One key covers both.** labs calls every environment with one fixed key —
-`LABS_API_KEY` if you set it, otherwise the built-in default
-`labs-default-key`. How each project is given that key differs, because the
-projects differ, and that is the only thing you have to arrange.
+**One key, sent in every dispatch.** labs calls every environment with one fixed
+key — `LABS_ACTION_API_KEY` if you set it, otherwise the built-in default
+`labs-default-key` — and passes it as the `api_key` input on every dispatch.
+That one key is all it takes to drive any lab action: applab's workflow threads
+it through (`inputs.api_key || secrets.APPLAB_API_KEY`), and the debugger
+environment comes up holding it. There is nothing per-repository to configure.
 
-**applab — nothing.** labs dispatches `debugger.yml` with the key as the
-`api_key` input. applab's workflow threads that through
-(`inputs.api_key || secrets.APPLAB_API_KEY`), so the environment comes up
-configured with the key labs holds, and there is no secret to set. The only
-other thing the environment needs is the tunnel credential it already uses —
-`CLOUDFLARE_TOKEN` — and a named tunnel whose hostname matches the domain you
-configured here.
+**Do the same on the sandboxlab side.** Its debugger workflow must take `api_key`
+from the dispatch (`api_key: ${{ inputs.api_key }}` in its `uses: ./action`
+block, alongside the inputs it already declares). Until it does, a dispatch
+carrying `api_key` is rejected outright — GitHub answers `422` and starts no run
+— so sandboxlab's key currently comes from whatever `SANDBOXLAB_API_KEY` its
+workflow reads instead. Point both at the same value and one key covers both
+kinds.
 
-**sandboxlab — one secret.** Its debugger workflow reads the key from the
-repository secret `SANDBOXLAB_API_KEY` (`api_key: ${{
-secrets.SANDBOXLAB_API_KEY }}` in its `uses: ./action` block) — a path a
-dispatch cannot reach, so labs does not try. Set that secret to `LABS_API_KEY`,
-or to `labs-default-key` if you left `LABS_API_KEY` unset, and sandboxlab comes
-up holding the key labs will call it with. Do not send it as a dispatch input:
-its workflow declares no `api_key` input, and GitHub rejects a dispatch carrying
-an unknown one (422 — no run starts).
+The other thing each environment needs is a named Cloudflare tunnel whose
+hostname matches the domain you configured here, and — for applab —
+`CLOUDFLARE_TOKEN`, the tunnel credential it already uses.
 
 sandboxlab's `domain` input is a choice — only `sandboxlab-1.chenshaowen.com`
 and `sandboxlab-2.chenshaowen.com` are accepted — so a named tunnel must serve
@@ -208,7 +205,7 @@ would change only the sandboxlab driver.
 which lets two environments of the same kind run at once.
 
 **If you would rather not use the shared key** — for instance because you rotate
-a key of your own — set `LABS_API_KEY` (or `LABS_KEY_<ID>` for one environment)
+a key of your own — set `LABS_ACTION_API_KEY` (or `LABS_KEY_<ID>` for one environment)
 to it, and put the same value in that repository's secret. applab takes it from
 the dispatch either way; sandboxlab needs the secret set to match.
 
@@ -237,7 +234,7 @@ means there is nothing to type in and nothing to keep in sync.
 Three optional overrides. The first two are named for the repository with its
 name uppercased (`APPLAB` for `shaowenchen/applab`):
 
-- **`LABS_API_KEY`** — the one key labs calls every environment with, instead of
+- **`LABS_ACTION_API_KEY`** — the one key labs calls every environment with, instead of
   the built-in `labs-default-key`. See "What you have to do in the other
   repositories" above for how each project is given it.
 - **`LABS_DOMAIN_APPLAB`** (or `LABS_DOMAIN_SUFFIX`, a shared suffix under which
@@ -268,7 +265,7 @@ Two things are worth knowing at the top:
 
 - **The key is fixed, not discovered.** Neither control plane reports its key
   over its unauthenticated `/api/v1/config` (nor should it), so labs cannot read
-  it — it calls every environment with one fixed value, `LABS_API_KEY` or the
+  it — it calls every environment with one fixed value, `LABS_ACTION_API_KEY` or the
   built-in default, and each project is given that value its own way. Fixed
   rather than random is what lets labs reach an environment it did not itself
   just dispatch.

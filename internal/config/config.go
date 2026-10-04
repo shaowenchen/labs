@@ -11,9 +11,9 @@
 // path it is served under, the workflow that brings it up — is derived from its
 // name. The address is derived too, defaulting to the hostname each project's
 // own workflow declares as a choice. What is left is one key, shared by every
-// environment, and it has a built-in default: LABS_API_KEY, or LABS_KEY_<ID> for
-// the one environment that wants its own, where <ID> is the repository name
-// uppercased.
+// environment, and it has a built-in default: LABS_ACTION_API_KEY, or
+// LABS_KEY_<ID> for the one environment that wants its own, where <ID> is the
+// repository name uppercased.
 package config
 
 import (
@@ -110,9 +110,9 @@ type Config struct {
 	DomainSuffix string
 
 	// APIKey is the key every environment falls back to when it has none of its
-	// own, from LABS_API_KEY. It is how a deployment pins one fixed key for both
-	// applab and sandboxlab rather than relying on the built-in default. Empty
-	// means the built-in default is used.
+	// own, from LABS_ACTION_API_KEY. It is how a deployment pins one fixed key
+	// for every kind rather than relying on the built-in default. Empty means the
+	// built-in default is used.
 	APIKey string
 
 	// Envs are the environments, one per repository, each with its key resolved.
@@ -148,7 +148,7 @@ func Load() (Config, error) {
 	setString(&cfg.GitHubAPI, "LABS_GITHUB_API", "https://api.github.com")
 	setString(&cfg.DispatchSessionHours, "LABS_DISPATCH_SESSION_HOURS", "4")
 	setString(&cfg.DomainSuffix, "LABS_DOMAIN_SUFFIX", "")
-	setString(&cfg.APIKey, "LABS_API_KEY", "")
+	setString(&cfg.APIKey, "LABS_ACTION_API_KEY", "")
 
 	cfg.Listen = resolveListen(cfg.Listen)
 
@@ -281,10 +281,10 @@ func (c Config) validateEnv(e model.Env) []string {
 	case e.Domain != "" && !validHost(e.Domain):
 		add("environment %q has domain %q, which must be a bare hostname with no scheme or path (or leave it out and let the address be read from the environment's own run log)", e.ID, e.Domain)
 	case e.APIKey == "":
-		// Unreachable while buildEnvs generates one for every kind — kept as a
-		// guard, since a future kind whose workflow takes no api_key input would
-		// land here and needs to be a problem rather than a blank credential.
-		add("environment %q has no key: set LABS_KEY_%s to the key that environment is configured with", e.ID, e.ID)
+		// Unreachable while buildEnvs always resolves a key — kept as a guard,
+		// so a change that let one through is a problem rather than a blank
+		// credential.
+		add("environment %q has no key: set LABS_ACTION_API_KEY, or LABS_KEY_%s for this one", e.ID, e.ID)
 	case e.Capacity <= 0:
 		add("environment %q has capacity %d, which must be positive", e.ID, e.Capacity)
 	}
@@ -371,8 +371,8 @@ var defaultDomains = map[model.Kind]string{
 }
 
 // buildEnvs turns the repository list into environments. fallbackKey is the key
-// an environment with none of its own is called with: LABS_API_KEY when it is
-// set, otherwise the built-in default.
+// an environment with none of its own is called with: LABS_ACTION_API_KEY when
+// it is set, otherwise the built-in default.
 func buildEnvs(repos []string, slots int, domainSuffix, ref, fallbackKey string) []model.Env {
 	envs := make([]model.Env, 0, len(repos))
 	if fallbackKey == "" {
@@ -408,22 +408,13 @@ func buildEnvs(repos []string, slots int, domainSuffix, ref, fallbackKey string)
 			APIKey:   strings.TrimSpace(os.Getenv("LABS_KEY_" + id)),
 		}
 		if env.APIKey == "" {
-			// A fixed fallback rather than a generated key, so the value is the
-			// same on every dispatch and across every restart. That is what lets
-			// labs reach an environment it did not itself just start — an action
-			// run already up, whether this process dispatched it or someone
-			// triggered it by hand — instead of only one it brought up moments
-			// ago and still remembers the key for. LABS_API_KEY pins it for the
-			// deployment; the built-in default is the same idea with nothing set.
+			// One fixed key for every environment rather than one minted per
+			// process: the value is the same on every dispatch and across every
+			// restart, so labs can call whatever environment is actually up,
+			// including one it did not itself just dispatch. LABS_ACTION_API_KEY
+			// pins it for the deployment; the built-in default is the same idea
+			// with nothing set.
 			env.APIKey = fallbackKey
-			// Only applab's workflow declares an api_key input, so only there is
-			// the key handed over at dispatch. sandboxlab's workflow instead
-			// takes its key from the repository secret SANDBOXLAB_API_KEY, and
-			// sending one would be rejected: GitHub refuses a dispatch carrying
-			// an input the workflow does not declare, and the run would never
-			// start. Set that secret to the same value and both kinds are
-			// reached with one key.
-			env.ManagedKey = env.Kind == model.KindApplab
 		}
 		envs = append(envs, env)
 	}
@@ -577,14 +568,7 @@ func splitList(v string) []string {
 // environment it had itself dispatched moments earlier. A constant reaches any
 // environment that was brought up holding it.
 //
-// How each side is given it differs, because the two projects differ. An applab
-// environment takes it from the api_key dispatch input, so labs hands it over
-// and applab comes up holding it with nothing configured. A sandboxlab
-// environment takes it from the repository secret SANDBOXLAB_API_KEY, which a
-// dispatch cannot set — so for sandboxlab, set that secret to this value (or
-// override LABS_API_KEY to something else, and set the secret to that).
-//
 // It is non-secret by construction — it is checked into this repository — so it
-// is compiled in rather than required as configuration. Set LABS_KEY_<ID> for
-// an environment brought up with a key of its own.
+// is compiled in rather than required as configuration. Set LABS_ACTION_API_KEY
+// to use a key of your own, or LABS_KEY_<ID> for one environment only.
 const defaultAPIKey = "labs-default-key"
