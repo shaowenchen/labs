@@ -286,7 +286,7 @@ func TestDomainFallsBackToTheProjectsDefault(t *testing.T) {
 	if !cfg.Usable() {
 		t.Fatalf("a configuration without a domain should be usable, problems: %v", cfg.Problems)
 	}
-	if cfg.Envs[0].Domain != "applab-2.chenshaowen.com" {
+	if cfg.Envs[0].Domain != "applab-1.chenshaowen.com" {
 		t.Errorf("domain = %q, want the applab default", cfg.Envs[0].Domain)
 	}
 }
@@ -446,7 +446,7 @@ func TestSandboxlabDispatchCarriesTheKeyAndDomain(t *testing.T) {
 func TestDefaultDomainIsSentInTheDispatch(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_DOMAIN_SUFFIX": ""})
 	inputs := mustLoad(t).Envs[0].DispatchInputs("4")
-	if inputs["domain"] != "applab-2.chenshaowen.com" {
+	if inputs["domain"] != "applab-1.chenshaowen.com" {
 		t.Errorf("domain = %v, want the applab default", inputs["domain"])
 	}
 	if inputs["session_hours"] != "4" || inputs["tunnel"] != "cloudflare" {

@@ -41,7 +41,6 @@ const consoleHTML = `<!doctype html>
   button { font: inherit; padding: .6rem 1.2rem; border: 1px solid var(--accent); background: var(--accent); color: #fff; border-radius: 6px; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   button.small { padding: .3rem .7rem; font-size: .85rem; }
-  .key-input { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; padding: .3rem .5rem; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); margin-right: .35rem; }
   #out { margin-top: 2rem; }
   .row { display: flex; gap: .5rem; align-items: baseline; padding: .5rem 0; border-top: 1px solid var(--line); }
   .row .k { width: 8rem; color: var(--muted); flex: none; }
@@ -129,33 +128,8 @@ function renderEnvs(list) {
       u.append(a); box.append(u);
     }
     if (!e.ready && e.message) box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.message }));
-    // A key was refused: ask for the right one, in place.
-    if (e.unauthorized) box.append(keyEntry(e.id));
     envs.append(box);
   });
-}
-// keyEntry is the inline form for entering an environment's key. It is shown
-// only when the environment answered but refused the configured key, and it
-// posts the key and re-checks the status so the page updates without a reload.
-function keyEntry(id) {
-  const box = document.createElement('div'); box.className = 'msg';
-  const input = document.createElement('input');
-  input.type = 'password'; input.placeholder = 'paste the environment key'; input.className = 'key-input';
-  const btn = document.createElement('button'); btn.textContent = 'Use this key'; btn.className = 'small';
-  const note = document.createElement('span'); note.className = 'err';
-  btn.onclick = async () => {
-    btn.disabled = true;
-    try {
-      const { ok, status: code, body } = await fetchJSON('api/v1/environments/' + encodeURIComponent(id) + '/key',
-        { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ key: input.value }) });
-      if (!ok) { note.textContent = ' ' + (body.error || ('HTTP ' + code)); btn.disabled = false; return; }
-      loadStatus();
-    } catch (err) {
-      note.textContent = ' ' + err.message; btn.disabled = false;
-    }
-  };
-  box.append(input, btn, note);
-  return box;
 }
 // renderActions offers one button per ready kind, so a deployment serving both
 // applab and sandboxlab can hand out either. The button asks for the kind it

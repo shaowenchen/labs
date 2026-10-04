@@ -366,8 +366,8 @@ func basePathFor(kind model.Kind) string {
 // expected to serve it. They are defaults, not the shape of a deployment: a
 // different tunnel is pointed at with LABS_DOMAIN_<ID> or LABS_DOMAIN_SUFFIX.
 var defaultDomains = map[model.Kind]string{
-	model.KindApplab:     "applab-2.chenshaowen.com",
-	model.KindSandboxlab: "sandboxlab-2.chenshaowen.com",
+	model.KindApplab:     "applab-1.chenshaowen.com",
+	model.KindSandboxlab: "sandboxlab-1.chenshaowen.com",
 }
 
 // buildEnvs turns the repository list into environments. fallbackKey is the key

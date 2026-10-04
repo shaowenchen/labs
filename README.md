@@ -194,7 +194,7 @@ hostname matches the domain you configured here, and — for applab —
 sandboxlab's `domain` input is a choice — only `sandboxlab-1.chenshaowen.com`
 and `sandboxlab-2.chenshaowen.com` are accepted — so a named tunnel must serve
 one of those hostnames, and labs is pointed at it with `LABS_DOMAIN_SANDBOXLAB`
-(or a suffix that produces it); the default here is the second.
+(or a suffix that produces it); the default here is the first.
 
 Because sandboxlab has one key for the whole deployment, a lab handed out from
 it carries that key and the warning that says so. sandboxlab removed per-user
