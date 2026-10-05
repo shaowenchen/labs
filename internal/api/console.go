@@ -141,25 +141,32 @@ function renderEnvs(list) {
     envs.append(box);
   });
 }
-// renderActions offers one button per ready kind, so a deployment serving both
-// applab and sandboxlab can hand out either. The button asks for the kind it
-// names; a deployment with one kind therefore gets one button, which is the
-// same shape as before. Nothing is offered while no cluster is up — the status
-// list below already says one is starting.
+// renderActions offers one button per kind the deployment serves, so either
+// kind can be asked for. A kind that is not up gets a "Start" button rather
+// than none: creating a lab is what dispatches an environment's run, so hiding
+// the button while nothing runs would leave no way to ask for one at all — the
+// page would show "starting" forever with nothing starting it.
+//
+// The buttons are keyed by the set of kinds and their state, and only redrawn
+// when that changes, so the five-second poll does not replace a button under the
+// pointer.
 function renderActions(list) {
-  const readyKinds = [];
+  const kinds = [];
   (list || []).forEach(e => {
-    if (e.ready && e.kind && readyKinds.indexOf(e.kind) < 0) readyKinds.push(e.kind);
+    if (!e.kind) return;
+    let k = kinds.find(x => x.kind === e.kind);
+    if (!k) { k = { kind: e.kind, ready: false }; kinds.push(k); }
+    k.ready = k.ready || !!e.ready; // ready if any environment of the kind is
   });
-  const want = readyKinds.join(',');
+  const want = kinds.map(k => k.kind + (k.ready ? ':up' : ':down')).join(',');
   if (actions.dataset.kinds === want) return; // nothing changed; leave the buttons
   actions.dataset.kinds = want;
   actions.replaceChildren();
-  readyKinds.forEach(kind => {
+  kinds.forEach(k => {
     const b = document.createElement('button');
-    b.textContent = 'Get a ' + kind + ' lab';
+    b.textContent = k.ready ? 'Get a ' + k.kind + ' lab' : 'Start ' + k.kind;
     b.style.marginRight = '.5rem';
-    b.onclick = () => requestLab(kind, b);
+    b.onclick = () => requestLab(k.kind, b);
     actions.append(b);
   });
 }
