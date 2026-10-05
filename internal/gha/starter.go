@@ -75,7 +75,7 @@ func (k *Starter) EnsureRunning(ctx context.Context, t Target) bool {
 	lock.Lock()
 	defer lock.Unlock()
 
-	runs, err := k.client.Runs(ctx, t.Repo, t.Workflow, t.Ref, 10)
+	active, err := k.activeRun(ctx, t)
 	if err != nil {
 		// A listing that fails says nothing about whether a run is up. Answer no
 		// rather than dispatch: a blind dispatch could cancel a live run, and the
@@ -83,17 +83,50 @@ func (k *Starter) EnsureRunning(ctx context.Context, t Target) bool {
 		k.log.Warn("could not list runs", "env", t.ID, "repo", t.Repo, "error", err)
 		return false
 	}
+	if active {
+		k.log.Debug("a run is already active", "env", t.ID, "repo", t.Repo)
+		return true
+	}
+	return k.dispatch(ctx, t, "nothing was running")
+}
 
+// Running reports whether the environment has a run going, and when it does not,
+// a message worth showing for why the environment is not up.
+//
+// known is false when the question cannot be answered — a listing that failed,
+// a token GitHub refused. That is deliberately not the same as "no run": a
+// service that cannot read GitHub should still try the environment's address,
+// because the environment may well be up and it is only the listing that is
+// broken. known=true with up=false is the only case that means nothing is
+// serving the address.
+func (k *Starter) Running(ctx context.Context, t Target) (up bool, why string, known bool) {
+	runs, err := k.client.Runs(ctx, t.Repo, t.Workflow, t.Ref, 10)
+	if err != nil {
+		k.log.Warn("could not list runs", "env", t.ID, "repo", t.Repo, "error", err)
+		return false, "", false
+	}
 	for i := range runs {
-		// Queued or in progress: the environment is there or is coming, and it is
-		// this one — a second dispatch would cancel it rather than add to it.
 		if runs[i].Running() {
-			k.log.Debug("a run is already active", "env", t.ID, "repo", t.Repo, "run", runs[i].ID, "status", runs[i].Status)
-			return true
+			return true, "", true
 		}
 	}
+	return false, "no run of " + t.Workflow + " is active; asking for a lab starts one", true
+}
 
-	return k.dispatch(ctx, t, "nothing was running")
+// activeRun is the one place that decides "is an environment up", so the check,
+// the dispatch and the status all agree. A queued run and an in-progress run
+// both count: the first is the environment coming, the second is it being there.
+func (k *Starter) activeRun(ctx context.Context, t Target) (bool, error) {
+	runs, err := k.client.Runs(ctx, t.Repo, t.Workflow, t.Ref, 10)
+	if err != nil {
+		return false, err
+	}
+	for i := range runs {
+		if runs[i].Running() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Targets returns the environments this starter drives.

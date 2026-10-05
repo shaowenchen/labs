@@ -81,6 +81,11 @@ type Manager struct {
 	// request that finds none up is answered as such.
 	start func(ctx context.Context, env model.Env) bool
 
+	// running reports whether the environment has a run going, before its
+	// address is probed at all. Nil means there is nothing to ask, and the probe
+	// alone decides — which is right for a test, or a deployment with no token.
+	running func(ctx context.Context, env model.Env) (bool, string, bool)
+
 	mu    sync.Mutex
 	ready map[string]readyEntry
 }
@@ -125,6 +130,25 @@ func (m *Manager) WithDiscovery(fn func(ctx context.Context, env model.Env) (str
 func (m *Manager) WithStarter(fn func(ctx context.Context, env model.Env) bool) *Manager {
 	m.start = fn
 	return m
+}
+
+// WithRunnerCheck sets the function that reports whether an environment has a
+// run going. known is false when the question cannot be answered.
+func (m *Manager) WithRunnerCheck(fn func(ctx context.Context, env model.Env) (bool, string, bool)) *Manager {
+	m.running = fn
+	return m
+}
+
+// runningOn reports whether the environment has a run going, before anything is
+// asked of its address. known is false when there is nothing to ask (a test, a
+// deployment with no token) or when the question could not be answered (GitHub
+// refused the listing) — in both cases the probe alone decides, because an
+// environment may well be up when only the run listing is unavailable.
+func (m *Manager) runningOn(ctx context.Context, env model.Env) (up bool, why string, known bool) {
+	if m.running == nil {
+		return true, "", false
+	}
+	return m.running(ctx, env)
 }
 
 // Provision delivers one lab.
@@ -357,7 +381,14 @@ type EnvStatus struct {
 	Unauthorized bool
 }
 
-// Status reports every environment's readiness and what it is running.
+// Status reports every environment's readiness and what it is running, in the
+// order the answer depends on: whether a run is going, whether the service
+// answers, and then what the service says it has.
+//
+// The run check gates the rest. An environment with no run has nothing serving
+// its address, so there is no point asking it anything — the status is "no run
+// is active", the count is zero, and the list is empty. Only when a run is going
+// (or when that cannot be determined) is the service reached.
 //
 // Occupied is counted from the environment itself, not from this service's
 // records: the instances are the truth, and a service that restarted has
@@ -368,7 +399,16 @@ type EnvStatus struct {
 func (m *Manager) Status(ctx context.Context) []EnvStatus {
 	out := make([]EnvStatus, 0, len(m.cfg.Envs))
 	for _, env := range m.cfg.Envs {
-		st := EnvStatus{ID: env.ID, Kind: env.Kind, Capacity: env.Capacity, Occupied: m.occupied(ctx, env)}
+		st := EnvStatus{ID: env.ID, Kind: env.Kind, Capacity: env.Capacity}
+		if up, why, known := m.runningOn(ctx, env); known && !up {
+			// No run: report that, and stop. The service is not asked anything,
+			// which is also what keeps a stopped environment from answering with
+			// an edge proxy's tunnel error instead of the real reason.
+			st.Message = why
+			out = append(out, st)
+			continue
+		}
+		st.Occupied = m.occupied(ctx, env)
 		if drv := m.drivers[env.Kind]; drv != nil {
 			r := m.envReady(ctx, drv, env)
 			st.Ready = r.Ready
@@ -445,12 +485,16 @@ func (m *Manager) ReadyAny(ctx context.Context) bool {
 	return false
 }
 
-// envReady probes an environment, reusing a recent probe so a burst of requests
-// does not stampede a freshly started environment.
+// envReady decides whether an environment can serve a lab, in the order the
+// answer actually depends on: first whether a run is going, then whether the
+// service answers, and the service's own list is what the page shows.
 //
-// An environment with no configured domain is probed at the address its own run
-// log reported, discovered once and cached; until that address is known it is
-// simply not ready, which is the ordinary state while its run is still coming up.
+// The run check comes first because everything after it is meaningless without
+// it. An environment with no run has nothing serving its address at all, so
+// probing it only yields a tunnel error — a 530 that says less than "no run is
+// active" and sends the reader looking at the tunnel when the real answer is
+// that no environment was started. A recent probe is reused so a burst of
+// requests does not stampede a freshly started environment.
 func (m *Manager) envReady(ctx context.Context, drv driver.Driver, env model.Env) driver.Ready {
 	m.mu.Lock()
 	if e, ok := m.ready[env.ID]; ok && m.now().Sub(e.at) < m.readyTTL {
@@ -458,6 +502,13 @@ func (m *Manager) envReady(ctx context.Context, drv driver.Driver, env model.Env
 		return e.r
 	}
 	m.mu.Unlock()
+
+	// Step one: is there a run at all?
+	if up, why, known := m.runningOn(ctx, env); known && !up {
+		r := driver.Ready{Message: why}
+		m.remember(env.ID, r)
+		return r
+	}
 
 	probe := env
 	if probe.Domain == "" {

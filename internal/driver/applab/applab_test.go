@@ -321,9 +321,14 @@ func TestLongErrorBodyIsShortened(t *testing.T) {
 	if got := briefBody([]byte(long)); len(got) > 220 {
 		t.Errorf("briefBody kept %d characters, want a short line", len(got))
 	}
-	// A real, short error is left exactly as it came.
-	if got := briefBody([]byte(`  {"error":"invalid key"}  `)); got != `{"error":"invalid key"}` {
-		t.Errorf("briefBody(%q) = %q, want it unchanged and trimmed", `{"error":"invalid key"}`, got)
+	// A JSON error body is reduced to the message inside it, so a proxy's page
+	// reads as its one useful line.
+	if got := briefBody([]byte(`{"error":"invalid key"}`)); got != "invalid key" {
+		t.Errorf("briefBody = %q, want the error field", got)
+	}
+	// Something that is not JSON is left as it came.
+	if got := briefBody([]byte("  error code: 1033  ")); got != "error code: 1033" {
+		t.Errorf("briefBody = %q, want it unchanged and trimmed", got)
 	}
 }
 

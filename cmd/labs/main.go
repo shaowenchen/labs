@@ -131,6 +131,17 @@ func run(ctx context.Context, listen string, printConfig bool) error {
 			}
 			return starter.EnsureRunning(ctx, t)
 		})
+		// Status is decided in the order that matters: whether a run is active
+		// first, then whether the service answers. An environment with no run
+		// has nothing serving its address, so asking it anything returns a
+		// tunnel error that says less than "no run is active".
+		manager.WithRunnerCheck(func(ctx context.Context, env model.Env) (bool, string, bool) {
+			t, ok := targetByEnv[env.ID]
+			if !ok {
+				return true, "", false
+			}
+			return starter.Running(ctx, t)
+		})
 	}
 
 	go reaper.New(manager, cfg.ReapInterval, log).Run(ctx)

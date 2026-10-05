@@ -347,3 +347,64 @@ func TestStatusFallsBackToTheRecordedCount(t *testing.T) {
 		t.Fatalf("occupied = %v, want 1 from the recorded slot", got)
 	}
 }
+
+// The run check comes before the service: an environment with no run is
+// reported as such, and its address is never probed — a probe would only return
+// a tunnel error that says less.
+func TestNoRunIsReportedWithoutProbingTheService(t *testing.T) {
+	drv := &fakeDriver{ready: true} // the address would answer if it were asked
+	m, _ := testManager(t, drv, testConfig())
+	m.WithRunnerCheck(func(context.Context, model.Env) (bool, string, bool) {
+		return false, "no run is active", true
+	})
+
+	got := m.Status(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("Status = %v", got)
+	}
+	if got[0].Ready {
+		t.Error("an environment with no run should not read as ready")
+	}
+	if got[0].Message != "no run is active" {
+		t.Errorf("Message = %q, want the run check's reason", got[0].Message)
+	}
+}
+
+// When the run check cannot answer — GitHub refused the listing — the service
+// is still probed, because the environment may well be up and only the listing
+// broken. A check that cannot tell must not take an environment out of service.
+func TestUnknownRunFallsThroughToTheProbe(t *testing.T) {
+	drv := &fakeDriver{ready: true}
+	m, _ := testManager(t, drv, testConfig())
+	m.WithRunnerCheck(func(context.Context, model.Env) (bool, string, bool) {
+		return false, "", false // unknown
+	})
+
+	got := m.Status(context.Background())
+	if len(got) != 1 || !got[0].Ready {
+		t.Fatalf("Status = %v, want the probe's verdict (ready)", got)
+	}
+}
+
+// Status gates on the run: with no run, the environment reports why and is not
+// asked anything else — no ready probe, no instance count. That is what keeps a
+// stopped environment from answering with a tunnel error.
+func TestStatusGatesOnTheRun(t *testing.T) {
+	drv := &fakeDriver{ready: true, live: []driver.Live{{ID: "lab-01"}}}
+	m, _ := testManager(t, drv, testConfig())
+	m.WithRunnerCheck(func(context.Context, model.Env) (bool, string, bool) {
+		return false, "no run of debugger.yml is active", true
+	})
+
+	got := m.Status(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("Status = %v", got)
+	}
+	st := got[0]
+	if st.Ready || st.Occupied != 0 {
+		t.Errorf("with no run: ready=%v occupied=%d, want false/0", st.Ready, st.Occupied)
+	}
+	if st.Message == "" {
+		t.Error("with no run, the status should say so")
+	}
+}

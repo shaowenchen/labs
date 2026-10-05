@@ -358,16 +358,34 @@ func (e *httpError) Error() string {
 	return fmt.Sprintf("HTTP %d: %s", e.status, e.body)
 }
 
-// briefBody is an error body short enough to sit on a status line.
+// briefBody is an error body short enough to sit on a status line, and worded
+// the way the far end worded it.
 //
 // It is not a debugging aid but a message for whoever is watching an
-// environment come up, and an edge proxy's error page is several hundred bytes
-// of JSON that pushes the useful part out of view. A short body is left exactly
-// as it came — sandboxlab's own answers are one line ("invalid key") — so this
-// only bites on the walls, where the first clause is the part worth reading.
+// environment come up. An edge proxy answers with a page of JSON whose useful
+// part is one field, so a JSON object is reduced to its title or error, and
+// anything else is cut to a line. A short body is left exactly as it came —
+// sandboxlab's own answers are one line ("invalid key").
 func briefBody(raw []byte) string {
-	const max = 200
 	s := strings.TrimSpace(string(raw))
+	var obj struct {
+		Title   string `json:"title"`
+		Error   string `json:"error"`
+		Message string `json:"message"`
+		Detail  string `json:"detail"`
+	}
+	if json.Unmarshal([]byte(s), &obj) == nil {
+		for _, part := range []string{obj.Title, obj.Error, obj.Message, obj.Detail} {
+			if part = strings.TrimSpace(part); part != "" {
+				return clip(part)
+			}
+		}
+	}
+	return clip(s)
+}
+
+func clip(s string) string {
+	const max = 200
 	if len(s) <= max {
 		return s
 	}
