@@ -203,16 +203,26 @@ the dispatch either way; sandboxlab needs the secret set to match.
 See [`.env.example`](.env.example) for every variable and what it is for.
 Everything is an environment variable; there is no config file.
 
-**There is no environment list to write.** One entry in `LABS_REPOS` is one
-environment, and everything a repository implies — the project (`applab` or
-`sandboxlab`, from the name), the served path (`/applab`, `/sandbox`) and the
-workflow that brings it up — is derived from it. One fixed key covers both
-kinds. `LABS_REPOS` itself has a default, the two projects this service drives,
-so a deployment that runs both needs no variable at all.
+**There is no environment list to write.** One entry in a repository variable is
+one environment, and everything a repository implies — the served path
+(`/applab`, `/sandbox`) and the workflow that brings it up — is derived. One
+fixed key covers every kind.
+
+There is **one variable per kind**, and which variable a repository comes from
+is what decides its kind:
 
 ```bash
-LABS_GITHUB_TOKEN=...   # read and write on the repositories; the only variable required
+LABS_GITHUB_TOKEN=...                                # the only variable required
+LABS_APPLAB_REPOS=shaowenchen/applab                 # applab, defaults to this
+LABS_SANDBOXLAB_REPOS=shaowenchen/sandboxlab         # sandboxlab, defaults to this
 ```
+
+They are separate on purpose. A single list covering both kinds was the earlier
+shape, and it had a bad failure: setting it to one repository silently dropped
+the other kind, so a deployment that looked configured was serving half of what
+it should. With one variable each, configuring applab can never hide sandboxlab.
+Leave a variable unset to take its default; set it to empty to turn that kind
+off on purpose.
 
 That is the whole configuration. The **address** defaults to the hostname each
 project's own debugger workflow starts on (`applab-1.chenshaowen.com`,

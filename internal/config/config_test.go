@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -9,29 +10,48 @@ import (
 )
 
 // setEnv sets the variables a valid single-applab-repo configuration needs, so
-// a test only has to override the one it is about.
+// a test only has to override the one it is about. sandboxlab is explicitly off
+// in the baseline, so a test about applab sees exactly one environment.
 func setEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
 	base := map[string]string{
-		"LABS_GITHUB_TOKEN":  "token",
-		"LABS_REPOS":         "o/applab",
-		"LABS_DOMAIN_SUFFIX": "example.com",
+		"LABS_GITHUB_TOKEN":     "token",
+		"LABS_APPLAB_REPOS":     "o/applab",
+		"LABS_SANDBOXLAB_REPOS": "",
+		"LABS_DOMAIN_SUFFIX":    "example.com",
 	}
 	for k, v := range override(base, overrides) {
 		t.Setenv(k, v)
 	}
 }
 
+// unsetEnv removes a variable for the life of the test, so a test can exercise
+// the "neither set nor empty" case — the one that takes the built-in default.
+func unsetEnv(t *testing.T, keys ...string) {
+	t.Helper()
+	for _, k := range keys {
+		old, had := os.LookupEnv(k)
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatalf("unset %s: %v", k, err)
+		}
+		t.Cleanup(func() {
+			if had {
+				_ = os.Setenv(k, old)
+			}
+		})
+	}
+}
+
+// override applies overrides to a base map. An empty value is kept, not
+// dropped: an empty repository variable is meaningful — it turns that kind off
+// — so "set it to empty" and "leave it out" are different, and a test that
+// means one must not silently get the other.
 func override(base, over map[string]string) map[string]string {
 	out := map[string]string{}
 	for k, v := range base {
 		out[k] = v
 	}
 	for k, v := range over {
-		if v == "" {
-			delete(out, k)
-			continue
-		}
 		out[k] = v
 	}
 	return out
@@ -105,7 +125,7 @@ func TestRepositoryBecomesAnEnvironment(t *testing.T) {
 }
 
 func TestSandboxlabRepositoryIsRecognised(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_REPOS": "o/sandboxlab"})
+	setEnv(t, map[string]string{"LABS_APPLAB_REPOS": "", "LABS_SANDBOXLAB_REPOS": "o/sandboxlab"})
 	cfg := mustLoad(t)
 	if len(cfg.Envs) != 1 {
 		t.Fatalf("want one environment, got %d", len(cfg.Envs))
@@ -129,7 +149,7 @@ func TestSandboxlabRepositoryIsRecognised(t *testing.T) {
 }
 
 func TestSeveralRepositoriesBecomeSeveralEnvironments(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_REPOS": "o/applab,o/sandboxlab"})
+	setEnv(t, map[string]string{"LABS_APPLAB_REPOS": "o/applab", "LABS_SANDBOXLAB_REPOS": "o/sandboxlab"})
 	cfg := mustLoad(t)
 	if len(cfg.Envs) != 2 {
 		t.Fatalf("want two environments, got %d", len(cfg.Envs))
@@ -221,21 +241,24 @@ func TestEnvID(t *testing.T) {
 
 // The point of the loader's design: an empty environment is not an error. The
 // service starts and says what is missing.
+// A missing token does not stop the service, and it is the one thing a
+// deployment must set — the repositories have defaults.
 func TestLoadWithNothingSetStillReturnsAConfig(t *testing.T) {
-	for _, k := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS", "LABS_LISTEN"} {
-		t.Setenv(k, "")
-	}
+	unsetEnv(t, "LABS_GITHUB_TOKEN", "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS", "LABS_LISTEN")
 	cfg := mustLoad(t)
 	if cfg.Usable() {
-		t.Fatal("a configuration with nothing set reported itself usable")
+		t.Fatal("a configuration with no token reported itself usable")
 	}
-	for _, want := range []string{"LABS_GITHUB_TOKEN", "LABS_REPOS"} {
-		if !hasProblem(cfg.Problems, want) {
-			t.Errorf("problems do not mention %s: %v", want, cfg.Problems)
-		}
+	if !hasProblem(cfg.Problems, "LABS_GITHUB_TOKEN") {
+		t.Errorf("problems do not mention LABS_GITHUB_TOKEN: %v", cfg.Problems)
 	}
 	if cfg.Listen == "" {
 		t.Error("Listen must still resolve so the server can bind")
+	}
+	// The repositories fall back to their defaults, so both kinds are present
+	// even with nothing set.
+	if len(cfg.Envs) != 2 {
+		t.Errorf("want both kinds from the defaults, got %v", cfg.Envs)
 	}
 }
 
@@ -260,10 +283,11 @@ func TestMissingTokenIsAProblem(t *testing.T) {
 // LABS_REPOS has a default — the two projects this service drives — so a
 // deployment running both needs no variable at all.
 func TestRepoDefaultsToTheTwoProjects(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_REPOS": ""})
+	unsetEnv(t, "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS")
+	t.Setenv("LABS_GITHUB_TOKEN", "token")
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
-		t.Fatalf("a deployment with no LABS_REPOS should be usable, problems: %v", cfg.Problems)
+		t.Fatalf("a deployment with neither repository variable should be usable, problems: %v", cfg.Problems)
 	}
 	kinds := map[model.Kind]bool{}
 	for _, e := range cfg.Envs {
@@ -274,13 +298,13 @@ func TestRepoDefaultsToTheTwoProjects(t *testing.T) {
 	}
 }
 
-// A repository that is not owner/repo is still a problem: LABS_REPOS has a
+// A repository that is not owner/repo is still a problem: the variable has a
 // default, but a value set to nonsense is a typo, not a reason to fall back.
 func TestBadRepoIsAProblem(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_REPOS": "notaRepo"})
+	setEnv(t, map[string]string{"LABS_APPLAB_REPOS": "notaRepo"})
 	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_REPOS") {
-		t.Fatalf("want a problem naming LABS_REPOS, got %v", cfg.Problems)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_APPLAB_REPOS") {
+		t.Fatalf("want a problem naming LABS_APPLAB_REPOS, got %v", cfg.Problems)
 	}
 }
 
@@ -405,7 +429,8 @@ func TestSessionTTLDefault(t *testing.T) {
 // with.
 func TestSandboxlabUsesTheDefaultKey(t *testing.T) {
 	setEnv(t, map[string]string{
-		"LABS_REPOS":               "o/sandboxlab",
+		"LABS_APPLAB_REPOS":        "",
+		"LABS_SANDBOXLAB_REPOS":    "o/sandboxlab",
 		"LABS_DOMAIN_SANDBOXLAB":   "sandboxlab-1.example.com",
 		"LABS_TEMPLATE_SANDBOXLAB": "all-in-one",
 	})
@@ -424,7 +449,8 @@ func TestSandboxlabUsesTheDefaultKey(t *testing.T) {
 
 func TestSandboxlabWithAKeyIsUsable(t *testing.T) {
 	setEnv(t, map[string]string{
-		"LABS_REPOS":               "o/sandboxlab",
+		"LABS_APPLAB_REPOS":        "",
+		"LABS_SANDBOXLAB_REPOS":    "o/sandboxlab",
 		"LABS_DOMAIN_SANDBOXLAB":   "sandboxlab-1.example.com",
 		"LABS_KEY_SANDBOXLAB":      "sb-key",
 		"LABS_TEMPLATE_SANDBOXLAB": "all-in-one",
@@ -449,7 +475,8 @@ func TestSandboxlabWithAKeyIsUsable(t *testing.T) {
 // does: one key reaches every kind the same way.
 func TestSandboxlabDispatchCarriesTheKeyAndDomain(t *testing.T) {
 	setEnv(t, map[string]string{
-		"LABS_REPOS":             "o/sandboxlab",
+		"LABS_APPLAB_REPOS":      "",
+		"LABS_SANDBOXLAB_REPOS":  "o/sandboxlab",
 		"LABS_DOMAIN_SANDBOXLAB": "sandboxlab-1.example.com",
 	})
 	inputs := mustLoad(t).Envs[0].DispatchInputs("4")
@@ -491,8 +518,9 @@ func TestEmptyDomainSendsNoDomainInput(t *testing.T) {
 // that is needed to call any of them.
 func TestOneActionKeyForEveryEnvironment(t *testing.T) {
 	setEnv(t, map[string]string{
-		"LABS_REPOS":          "o/applab,o/sandboxlab",
-		"LABS_ACTION_API_KEY": "one-action-key",
+		"LABS_APPLAB_REPOS":     "o/applab",
+		"LABS_SANDBOXLAB_REPOS": "o/sandboxlab",
+		"LABS_ACTION_API_KEY":   "one-action-key",
 	})
 	cfg := mustLoad(t)
 	if len(cfg.Envs) != 2 {
@@ -512,9 +540,10 @@ func TestOneActionKeyForEveryEnvironment(t *testing.T) {
 // does not use it.
 func TestPerEnvironmentKeyOverridesTheSharedOne(t *testing.T) {
 	setEnv(t, map[string]string{
-		"LABS_REPOS":          "o/applab,o/sandboxlab",
-		"LABS_ACTION_API_KEY": "one-action-key",
-		"LABS_KEY_SANDBOXLAB": "its-own-key",
+		"LABS_APPLAB_REPOS":     "o/applab",
+		"LABS_SANDBOXLAB_REPOS": "o/sandboxlab",
+		"LABS_ACTION_API_KEY":   "one-action-key",
+		"LABS_KEY_SANDBOXLAB":   "its-own-key",
 	})
 	cfg := mustLoad(t)
 	byID := map[string]string{}
@@ -529,23 +558,93 @@ func TestPerEnvironmentKeyOverridesTheSharedOne(t *testing.T) {
 	}
 }
 
-// ReposSource says whether the repository list came from the variable or the
-// default, so a deployment serving fewer kinds than expected can be told which.
-func TestReposSource(t *testing.T) {
-	cases := []struct {
-		name string
-		over map[string]string
-		want string
-	}{
-		{"default", map[string]string{"LABS_REPOS": ""}, "default"},
-		{"set", map[string]string{"LABS_REPOS": "o/applab"}, "LABS_REPOS"},
+// Each kind has its own repository variable, so setting one kind's list can
+// never drop the other kind — which is exactly what a single shared list did.
+func TestEachKindHasItsOwnRepoVariable(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_APPLAB_REPOS":     "o/myapplab",
+		"LABS_SANDBOXLAB_REPOS": "o/mysandboxlab",
+	})
+	cfg := mustLoad(t)
+	byKind := map[string]string{}
+	for _, e := range cfg.Envs {
+		byKind[string(e.Kind)] = e.Repo
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			setEnv(t, tc.over)
-			if got := mustLoad(t).ReposSource; got != tc.want {
-				t.Errorf("ReposSource = %q, want %q", got, tc.want)
-			}
-		})
+	if byKind["applab"] != "o/myapplab" {
+		t.Errorf("applab repo = %q", byKind["applab"])
+	}
+	if byKind["sandboxlab"] != "o/mysandboxlab" {
+		t.Errorf("sandboxlab repo = %q", byKind["sandboxlab"])
+	}
+	if cfg.ReposSource["applab"] != "LABS_APPLAB_REPOS" || cfg.ReposSource["sandboxlab"] != "LABS_SANDBOXLAB_REPOS" {
+		t.Errorf("ReposSource = %v, want each kind's own variable", cfg.ReposSource)
+	}
+}
+
+// Setting only one kind's variable leaves the other kind on its default — the
+// bug the single shared list caused.
+func TestSettingOneKindLeavesTheOtherAlone(t *testing.T) {
+	unsetEnv(t, "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS")
+	t.Setenv("LABS_GITHUB_TOKEN", "token")
+	t.Setenv("LABS_APPLAB_REPOS", "o/myapplab")
+	cfg := mustLoad(t)
+	byKind := map[string]string{}
+	for _, e := range cfg.Envs {
+		byKind[string(e.Kind)] = e.Repo
+	}
+	if byKind["applab"] != "o/myapplab" {
+		t.Errorf("applab repo = %q", byKind["applab"])
+	}
+	if byKind["sandboxlab"] != "shaowenchen/sandboxlab" {
+		t.Errorf("setting LABS_APPLAB_REPOS dropped sandboxlab: %v", byKind)
+	}
+	if cfg.ReposSource["sandboxlab"] != "default" {
+		t.Errorf("sandboxlab source = %q, want default", cfg.ReposSource["sandboxlab"])
+	}
+}
+
+// ReposSource says, per kind, whether the list came from its variable, the
+// default, or was turned off — so a deployment serving fewer kinds than
+// expected can be told which variable decided that.
+func TestReposSource(t *testing.T) {
+	t.Run("neither set takes the default", func(t *testing.T) {
+		unsetEnv(t, "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS")
+		t.Setenv("LABS_GITHUB_TOKEN", "token")
+		got := mustLoad(t).ReposSource
+		if got["applab"] != "default" || got["sandboxlab"] != "default" {
+			t.Errorf("ReposSource = %v, want default for both", got)
+		}
+	})
+
+	t.Run("one set is named, the other stays default", func(t *testing.T) {
+		unsetEnv(t, "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS")
+		t.Setenv("LABS_GITHUB_TOKEN", "token")
+		t.Setenv("LABS_SANDBOXLAB_REPOS", "o/sb")
+		got := mustLoad(t).ReposSource
+		if got["sandboxlab"] != "LABS_SANDBOXLAB_REPOS" {
+			t.Errorf("sandboxlab source = %q", got["sandboxlab"])
+		}
+		if got["applab"] != "default" {
+			t.Errorf("applab source = %q, want default", got["applab"])
+		}
+	})
+}
+
+// Setting a kind's variable to empty turns that kind off — distinct from
+// leaving it unset, which takes the default. That is what makes it possible to
+// serve one kind on purpose rather than by accident.
+func TestEmptyRepoVariableTurnsAKindOff(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_SANDBOXLAB_REPOS": ""})
+	cfg := mustLoad(t)
+	for _, e := range cfg.Envs {
+		if e.Kind == model.KindSandboxlab {
+			t.Fatalf("sandboxlab should be off, got %+v", e)
+		}
+	}
+	if cfg.ReposSource["sandboxlab"] != "off" {
+		t.Errorf("sandboxlab source = %q, want off", cfg.ReposSource["sandboxlab"])
+	}
+	if !cfg.Usable() {
+		t.Fatalf("turning a kind off on purpose should not be a problem: %v", cfg.Problems)
 	}
 }

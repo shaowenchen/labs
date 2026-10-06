@@ -84,13 +84,24 @@ type Config struct {
 	// Repos is the allow-list of repositories workflows may be dispatched in,
 	// as "owner/repo". It is also the environment list: one repository is one
 	// environment.
+	//
+	// Each kind has its own variable, so configuring one kind can never hide the
+	// other: LABS_APPLAB_REPOS and LABS_SANDBOXLAB_REPOS. A single list covering
+	// both was the earlier shape, and it meant setting it to one repository
+	// silently dropped the other kind — a deployment that looks configured and
+	// is quietly serving half of what it should.
 	Repos []string
 
-	// ReposSource says where Repos came from — "LABS_REPOS" when the variable
-	// was set, "default" when the built-in list was used. It is reported so a
-	// deployment that meant to serve two kinds and set the variable to one can
-	// see why only one is there, rather than only noticing a missing block.
-	ReposSource string
+	// Specs is what Repos is built from, reached one step earlier: each entry
+	// with the kind it runs and the variable that named it. Validation uses it
+	// to point a bad entry at the variable to fix.
+	Specs []envSpec
+
+	// ReposSource says, per kind, where that kind's repository list came from:
+	// the variable that set it, "default", or "off" for a kind turned off by
+	// setting its variable to empty. It is reported so a deployment serving
+	// fewer kinds than expected can see which variable decided that.
+	ReposSource map[string]string
 
 	// EnvSlots is how many concurrent sessions each environment serves, which
 	// is the number of app ids it lends out. It applies to every environment.
@@ -175,18 +186,47 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
-	// LABS_REPOS defaults to the two projects this service drives, so a
-	// deployment that runs both needs no variable at all. Set it to point at
-	// forks, or at a subset — one entry is one environment.
-	repos := defaultRepos
-	setString(&repos, "LABS_REPOS", defaultRepos)
-	cfg.Repos = splitList(repos)
-	if _, set := os.LookupEnv("LABS_REPOS"); set && strings.TrimSpace(os.Getenv("LABS_REPOS")) != "" {
-		cfg.ReposSource = "LABS_REPOS"
-	} else {
-		cfg.ReposSource = "default"
+	// One variable per kind, so configuring one kind can never hide the other.
+	// A single LABS_REPOS covering both was the earlier shape and it did exactly
+	// that: setting it to one repository silently dropped the other kind.
+	//
+	// Which variable a repository comes from is also what says which kind it is.
+	// That is deliberate: the kind decides the served path, the workflow and the
+	// driver, so getting it wrong is not a smaller mistake than a typo — and
+	// deriving it from the repository's name meant a fork called something else
+	// was silently driven as the wrong project.
+	cfg.ReposSource = map[string]string{}
+	var specs []envSpec
+	for _, k := range []struct {
+		kind model.Kind
+		env  string
+	}{
+		{model.KindApplab, "LABS_APPLAB_REPOS"},
+		{model.KindSandboxlab, "LABS_SANDBOXLAB_REPOS"},
+	} {
+		raw, set := os.LookupEnv(k.env)
+		switch {
+		case !set || strings.TrimSpace(raw) == "":
+			// Unset takes the default repository. Set to empty is not the same
+			// thing — see below.
+			if set {
+				cfg.ReposSource[string(k.kind)] = "off"
+				continue
+			}
+			cfg.ReposSource[string(k.kind)] = "default"
+			specs = append(specs, envSpec{kind: k.kind, repo: defaultRepoFor(k.kind), source: k.env})
+		default:
+			cfg.ReposSource[string(k.kind)] = k.env
+			for _, repo := range splitList(raw) {
+				specs = append(specs, envSpec{kind: k.kind, repo: repo, source: k.env})
+			}
+		}
 	}
-	cfg.Envs = buildEnvs(cfg.Repos, cfg.EnvSlots, cfg.DomainSuffix, cfg.DispatchRef, cfg.APIKey)
+	cfg.Specs = specs
+	for _, s := range specs {
+		cfg.Repos = append(cfg.Repos, s.repo)
+	}
+	cfg.Envs = buildEnvs(specs, cfg.EnvSlots, cfg.DomainSuffix, cfg.DispatchRef, cfg.APIKey)
 
 	cfg.Problems = append(cfg.Problems, cfg.Validate()...)
 	return cfg, nil
@@ -234,18 +274,19 @@ func (c Config) Validate() []string {
 		add("LABS_SESSION_TTL must be positive, got %s", c.SessionTTL)
 	}
 	if c.GitHubToken == "" {
-		add("LABS_GITHUB_TOKEN is not set: the service dispatches workflows, which needs a token with Actions: write on the repositories in LABS_REPOS")
+		add("LABS_GITHUB_TOKEN is not set: the service dispatches workflows, which needs a token with Actions: write on the repositories it runs")
 	}
-	// LABS_REPOS has a default, so an empty list only happens if it was set to
-	// nothing on purpose — which is a mistake worth naming, not a silent
-	// fallback to the default.
-	if len(c.Repos) == 0 {
-		add("LABS_REPOS is empty: a comma-separated list of owner/repo the service may dispatch in")
-	}
-	for _, r := range c.Repos {
-		if !strings.Contains(r, "/") {
-			add("LABS_REPOS entry %q is not owner/repo", r)
+	// Each repository is named with the variable it came from, so a bad entry
+	// points at the variable to fix rather than at whichever list it landed in.
+	for _, s := range c.Specs {
+		if !strings.Contains(s.repo, "/") {
+			add("%s entry %q is not owner/repo", s.source, s.repo)
 		}
+	}
+	// Both kinds turned off is a deployment that can serve nothing, which is
+	// worth naming: it is where "no environment is available" comes from.
+	if len(c.Envs) == 0 {
+		add("no environment is configured: set LABS_APPLAB_REPOS or LABS_SANDBOXLAB_REPOS, or leave both unset for the defaults")
 	}
 	if !validSessionHours(c.DispatchSessionHours) {
 		add("LABS_DISPATCH_SESSION_HOURS is %q, but the workflow declares it as a choice of 1, 2, 4 or unlimited", c.DispatchSessionHours)
@@ -368,16 +409,26 @@ var defaultDomains = map[model.Kind]string{
 	model.KindSandboxlab: "sandboxlab-1.chenshaowen.com",
 }
 
+// envSpec is one environment to build: which kind, the repository that runs it,
+// and the variable that named it — for error messages that point at the thing
+// to fix. The kind is carried rather than derived from the repository's name,
+// because the variable it came from is what decided it.
+type envSpec struct {
+	kind   model.Kind
+	repo   string
+	source string
+}
+
 // buildEnvs turns the repository list into environments. fallbackKey is the key
 // an environment with none of its own is called with: LABS_ACTION_API_KEY when
 // it is set, otherwise the built-in default.
-func buildEnvs(repos []string, slots int, domainSuffix, ref, fallbackKey string) []model.Env {
-	envs := make([]model.Env, 0, len(repos))
+func buildEnvs(specs []envSpec, slots int, domainSuffix, ref, fallbackKey string) []model.Env {
+	envs := make([]model.Env, 0, len(specs))
 	if fallbackKey == "" {
 		fallbackKey = defaultAPIKey
 	}
-	for _, repo := range repos {
-		kind := kindFor(repo)
+	for _, spec := range specs {
+		kind, repo := spec.kind, spec.repo
 		name := repoName(repo)
 		id := envID(name)
 
@@ -426,17 +477,6 @@ func repoName(repo string) string {
 		return repo[i+1:]
 	}
 	return repo
-}
-
-// kindFor names the project a repository belongs to, from its name: the two
-// debugger environments this service drives are named applab and sandboxlab.
-// A repository named neither is treated as applab, which is the kind that is
-// implemented; the mismatch shows up as a domain that never answers.
-func kindFor(repo string) model.Kind {
-	if strings.Contains(strings.ToLower(repoName(repo)), "sandbox") {
-		return model.KindSandboxlab
-	}
-	return model.KindApplab
 }
 
 // workflowFor is the workflow file a project's debugger environment is brought
@@ -574,8 +614,13 @@ func splitList(v string) []string {
 // labs sends it as the dispatch's api_key, and each project comes up holding it.
 const defaultAPIKey = "labs-default-key"
 
-// defaultRepos are the repositories this service drives when LABS_REPOS says
-// nothing: the two projects whose debugger environments it hands out, one
-// entry each. A deployment running both therefore needs no LABS_REPOS at all.
-// Set it to run a fork, or only one of the two.
-const defaultRepos = "shaowenchen/applab,shaowenchen/sandboxlab"
+// defaultRepos are the repositories this service drives when neither per-kind
+// variable says anything: one entry each, the two projects whose debugger
+// environments it hands out. Set LABS_APPLAB_REPOS or LABS_SANDBOXLAB_REPOS to
+// run a fork, or to run only one of the two kinds.
+var defaultRepos = map[model.Kind]string{
+	model.KindApplab:     "shaowenchen/applab",
+	model.KindSandboxlab: "shaowenchen/sandboxlab",
+}
+
+func defaultRepoFor(k model.Kind) string { return defaultRepos[k] }

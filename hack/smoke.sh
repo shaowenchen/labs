@@ -8,9 +8,9 @@
 #   LABS_GITHUB_TOKEN   a token with Actions: write on the repositories
 #
 # Everything else takes the default — the repositories (both projects), the key
-# both sides use, and the domains. Set LABS_REPOS only to narrow it to one
-# repository. It runs the service on a port of its own, so it does not touch a
-# real deployment.
+# both sides use, and the domains. Set LABS_APPLAB_REPOS or LABS_SANDBOXLAB_REPOS
+# only to narrow the kinds. It runs the service on a port of its own, so it
+# does not touch a real deployment.
 #
 # The first run is slow: creating the lab is what dispatches the run, and the
 # environment is about ten minutes of cluster and control-plane boot. The script
