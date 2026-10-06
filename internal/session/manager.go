@@ -88,6 +88,13 @@ type Manager struct {
 
 	mu    sync.Mutex
 	ready map[string]readyEntry
+
+	// choices is the last successful read of a kind's templates, kept so the
+	// page's poll does not reach the environment once every few seconds. It is
+	// keyed by kind and never expires: the list of a kind's templates is a
+	// property of the environment's build, not of its moment, so a stale copy
+	// is right far more often than a fresh read is worth the wait.
+	choices map[model.Kind][]driver.Choice
 }
 
 type readyEntry struct {
@@ -106,6 +113,7 @@ func New(cfg config.Config, st *store.Store, drivers map[model.Kind]driver.Drive
 		readyTTL:     15 * time.Second,
 		readyTimeout: 6 * time.Second,
 		ready:        map[string]readyEntry{},
+		choices:      map[model.Kind][]driver.Choice{},
 	}
 }
 
@@ -209,7 +217,19 @@ var ErrNoSuchTemplate = errors.New("no such template")
 // empty list and no error: the page shows no template picker rather than an
 // error, because a kind whose list is unavailable is still one a lab can be
 // asked for — the request simply gets the environment's own default.
+//
+// The first successful read is kept and reused. Reading it means a request to
+// the environment, and this is called from /config, which the page polls every
+// few seconds; without the cache a poll that used to be local becomes a round
+// trip per kind. A read that fails is not cached, so an environment coming up
+// starts offering its templates without waiting for a restart.
 func (m *Manager) ChoicesFor(ctx context.Context, kind model.Kind) []driver.Choice {
+	m.mu.Lock()
+	cached, ok := m.choices[kind]
+	m.mu.Unlock()
+	if ok {
+		return cached
+	}
 	drv := m.drivers[kind]
 	if drv == nil {
 		return nil
@@ -221,6 +241,9 @@ func (m *Manager) ChoicesFor(ctx context.Context, kind model.Kind) []driver.Choi
 			continue
 		}
 		if len(choices) > 0 {
+			m.mu.Lock()
+			m.choices[kind] = choices
+			m.mu.Unlock()
 			return choices
 		}
 	}
@@ -508,26 +531,15 @@ func (m *Manager) Status(ctx context.Context) []EnvStatus {
 	return out
 }
 
-// Occupied is counted from what is in use, which no single source knows on its
-// own. The environment knows which slots are deployed; the session store knows
-// which slots a caller is holding. A lab counts if either says so, because each
-// knows something the other cannot:
-//
-//   - an applab slot a session holds but whose app is not deployed — a lab just
-//     handed out, before anything is pushed into it — is in use, and only the
-//     session record says so;
-//   - a slot the environment has deployed but this process holds no session for
-//     — as after a restart — is in use too, and only the environment says so.
-//
-// Taking the environment's list alone and treating an applab slot with nothing
-// deployed as unused makes a lab that was just handed out read as zero, which is
-// the case a caller is most likely to be looking at. sandboxlab needs no union:
-// a sandbox is only in its list while it is running, and every sandbox this
-// service makes is a running one.
+// occupied is how many instances an environment is running, taken from the
+// environment's own list — an applab slot it has an app for, a sandboxlab
+// sandbox it has running. That list is what the page also shows beneath the
+// number, so the count and the rows under it are the same source and cannot
+// disagree.
 //
 // The service's own record is the fallback only when the environment cannot be
-// read at all, since then its list is empty for the wrong reason — better a
-// number from a stale record than a zero that looks like an empty cluster.
+// read at all: then the list is empty for the wrong reason, and a stale number
+// beats a zero that looks like an empty cluster.
 func (m *Manager) occupied(ctx context.Context, env model.Env) int {
 	drv := m.drivers[env.Kind]
 	if drv == nil {
@@ -538,25 +550,7 @@ func (m *Manager) occupied(ctx context.Context, env model.Env) int {
 		m.log.Warn("could not list an environment's running instances", "env", env.ID, "error", err)
 		return m.recorded(env)
 	}
-	if env.Kind != model.KindApplab {
-		return len(live)
-	}
-	return len(m.occupiedSlots(env, live))
-}
-
-// occupiedSlots is the applab slots in use: those the environment has deployed,
-// plus those a session holds, as one set.
-func (m *Manager) occupiedSlots(env model.Env, live []driver.Live) map[string]bool {
-	inUse := make(map[string]bool, len(live)+len(env.Slots))
-	for _, l := range live {
-		inUse[l.ID] = true
-	}
-	for _, s := range m.liveFor(env.ID) {
-		if s.App != "" {
-			inUse[s.App] = true
-		}
-	}
-	return inUse
+	return len(live)
 }
 
 // recorded is the fallback count, from this service's own store: applab's named
@@ -593,52 +587,12 @@ func (m *Manager) Live(ctx context.Context) []LiveLabs {
 			if err != nil {
 				m.log.Warn("could not list an environment's running instances", "env", env.ID, "error", err)
 			}
-			entry.Items = m.heldAlongside(env, items)
+			entry.Items = items
 		}
 		out = append(out, entry)
 	}
 	return out
 }
-
-// heldAlongside adds the applab slots a session holds but the environment did
-// not report, so the list matches the count rather than trailing it.
-//
-// A slot that was just handed out has no app deployed yet — the lab is the
-// session, and the app only becomes real when the caller pushes something into
-// it — so the environment has nothing to list for it. Without this the row would
-// appear only once that happened, which is the opposite of when it is worth
-// showing: the moment a caller has a lab is the moment they want to see it.
-//
-// The row carries the session's clock rather than the app's. Its creation time
-// is placed so that the reader's own arithmetic — created plus the deployment's
-// TTL, which is how it dates an applab lab — lands on the session's expiry.
-func (m *Manager) heldAlongside(env model.Env, items []driver.Live) []driver.Live {
-	if env.Kind != model.KindApplab {
-		return items
-	}
-	reported := make(map[string]bool, len(items))
-	for _, it := range items {
-		reported[it.ID] = true
-	}
-	for _, s := range m.liveFor(env.ID) {
-		if s.App == "" || reported[s.App] {
-			continue
-		}
-		items = append(items, driver.Live{
-			ID:        s.App,
-			State:     liveStateHeld,
-			CreatedAt: s.ExpiresAt.Add(-m.cfg.SessionTTL),
-			ExpiresAt: s.ExpiresAt,
-		})
-	}
-	return items
-}
-
-// liveStateHeld is the state of a slot a session holds with nothing deployed
-// behind it yet. It is this service's word, not the environment's — applab has
-// no state for "in use" — and it is what tells the two kinds of idle apart: a
-// slot nobody holds says "created", one that has been handed out says "held".
-const liveStateHeld = "held"
 
 // ReadyAny reports whether at least one environment is up.
 func (m *Manager) ReadyAny(ctx context.Context) bool {

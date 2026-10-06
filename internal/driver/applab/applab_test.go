@@ -335,7 +335,12 @@ func TestLongErrorBodyIsShortened(t *testing.T) {
 // Live reports the slots that are actually running, and only those: an app
 // still in "created" is a pre-made slot with nothing behind it, which is what
 // an idle slot is, so it is not a running lab and must not be counted.
-func TestLiveSkipsCreatedSlots(t *testing.T) {
+// The environment's list is the count, so every slot it has an app for is
+// reported — including one whose app is recorded but not deployed, which is the
+// state a slot is in right after a lab is handed out. An app outside the
+// environment's own slots is still left out, so a person's hand-made app does
+// not push the count past the capacity the slots define.
+func TestLiveReportsEverySlotTheEnvironmentHas(t *testing.T) {
 	f := &fakeAppLab{apps: []map[string]any{
 		{"id": "lab-01", "status": "created", "created_at": "2026-10-04T13:00:00Z"},
 		{"id": "lab-02", "status": "running", "created_at": "2026-10-04T13:05:00Z"},
@@ -350,14 +355,17 @@ func TestLiveSkipsCreatedSlots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Live: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "lab-02" {
-		t.Fatalf("Live = %+v, want only the running slot lab-02", got)
+	if len(got) != 2 {
+		t.Fatalf("Live = %+v, want both of the environment's slots", got)
 	}
-	if got[0].State != "running" || got[0].CreatedAt.IsZero() {
-		t.Errorf("Live[0] = %+v, want its state and creation time", got[0])
+	if got[0].ID != "lab-01" || got[0].State != "created" {
+		t.Errorf("Live[0] = %+v, want the idle slot with its state", got[0])
+	}
+	if got[1].ID != "lab-02" || got[1].State != "running" || got[1].CreatedAt.IsZero() {
+		t.Errorf("Live[1] = %+v, want its state and creation time", got[1])
 	}
 	// An applab app has no expiry of its own; the caller applies the session clock.
-	if !got[0].ExpiresAt.IsZero() {
-		t.Errorf("applab Live should carry no expiry, got %s", got[0].ExpiresAt)
+	if !got[0].ExpiresAt.IsZero() || !got[1].ExpiresAt.IsZero() {
+		t.Errorf("applab Live should carry no expiry, got %+v", got)
 	}
 }

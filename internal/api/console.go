@@ -98,7 +98,6 @@ const consoleHTML = `<!doctype html>
   }
 
   /* ── buttons ────────────────────────────────────────────────────────── */
-  #actions { display: flex; flex-wrap: wrap; gap: 10px; }
   button {
     font: inherit; font-weight: 550;
     padding: 11px 20px;
@@ -113,6 +112,10 @@ const consoleHTML = `<!doctype html>
   button:active:not(:disabled) { transform: translateY(1px); }
   button:disabled { opacity: .45; cursor: default; }
   button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  /* The one action a panel offers. It is a real button rather than a link so it
+     keeps the pressed and disabled states that a request needs — a create that
+     is in flight says so on the button itself. */
+  .kind-head button { padding: 9px 18px; font-size: .93rem; white-space: nowrap; }
   button.small {
     padding: 4px 11px; font-size: .8rem; font-weight: 500;
     background: transparent; color: var(--muted);
@@ -160,40 +163,47 @@ const consoleHTML = `<!doctype html>
     box-shadow: var(--shadow);
     overflow: hidden;
   }
+  /* The strip is the card's top edge. The tabs are plain labels on the card
+     itself rather than boxes: the selected one is marked by the accent
+     underline, which reads at a glance without drawing a second border inside
+     the card. The strip scrolls sideways rather than wrapping, so a deployment
+     with several kinds keeps every tab on one line. */
   #tabs {
-    display: flex; gap: 2px;
-    padding: 8px 10px 0;
+    display: flex; gap: 24px;
+    padding: 2px 20px 0;
     border-bottom: 1px solid var(--line);
-    background: var(--bg);
+    background: var(--surface);
     overflow-x: auto;
+    scrollbar-width: none;
   }
+  #tabs::-webkit-scrollbar { display: none; }
   #tabs:empty { display: none; }
   .tab {
-    font: inherit; font-size: .92rem; font-weight: 550;
+    font: inherit; font-size: .93rem; font-weight: 550;
     display: flex; align-items: center; gap: 8px;
-    padding: 9px 15px 10px;
-    border: 1px solid transparent; border-bottom: 0;
-    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
-    background: transparent; color: var(--muted); cursor: pointer;
-    margin-bottom: -1px;
+    padding: 13px 1px 11px;
+    border: 0; border-bottom: 2px solid transparent;
+    background: none; color: var(--muted); cursor: pointer;
+    white-space: nowrap; margin-bottom: -1px;
+    transition: color .12s ease, border-color .12s ease;
   }
   .tab:hover { color: var(--fg); }
-  .tab[aria-selected="true"] {
-    background: var(--surface); color: var(--fg);
-    border-color: var(--line);
-  }
-  .tab[aria-selected="true"]:hover { color: var(--fg); }
-  .tick { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--muted); }
+  .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+  .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; border-radius: 5px; }
+  .tick { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--muted); }
   .tick.ok { background: var(--ok); }
   .tick.warn { background: var(--warn); }
   .tick.err { background: var(--err); }
   /* One panel is on screen at a time, so its contents need no box of their
      own — the card around the strip is the only border. */
-  .kind { display: none; padding: 18px 20px; }
+  .kind { display: none; padding: 16px 20px 18px; }
   .kind.on { display: block; }
-  .kind-head { display: flex; align-items: center; gap: 10px; }
-  .kind-head .tail { margin-left: auto; }
-  .kind-ctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0 4px; }
+  /* Status on the left, the one action on the right: the panel says what state
+     its kind is in and offers what can be done about it, on one line. */
+  .kind-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap; min-height: 40px;
+  }
   .kind .card { background: none; border: 0; box-shadow: none; border-radius: 0; overflow: visible; }
   .kind .card:empty { display: none; }
   .kind h3 {
@@ -221,12 +231,19 @@ const consoleHTML = `<!doctype html>
   .warn { color: var(--warn); }
   .err { color: var(--err); }
 
-  /* A single kind of small label, used for states. */
+  /* A state, as a word with a dot before it rather than a pill: the pill drew a
+     box around a single word, which on a page this quiet read as a button. */
   .tail {
-    display: inline-flex; align-items: center; gap: 6px;
-    font-size: .8rem; color: var(--muted);
-    background: var(--line-soft); border-radius: 999px; padding: 2px 10px;
+    display: inline-flex; align-items: center; gap: 7px;
+    font-size: .87rem; color: var(--muted);
   }
+  .tail::before {
+    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    background: currentColor; flex: none;
+  }
+  .tail.ok { color: var(--ok); }
+  .tail.warn { color: var(--warn); }
+  .tail.err { color: var(--err); }
 
   code {
     font: .84rem/1.45 var(--mono);
@@ -412,10 +429,14 @@ function state(kind) {
   let s = sections.get(kind);
   if (s) return s;
   const sec = document.createElement('section'); sec.className = 'kind'; sec.id = 'panel-' + kind;
+  // Status on the left, the one action on the right. The panel is what the tab
+  // switched to, so the tab already says which kind this is; what the panel adds
+  // is the state in words, which the tab cannot fit.
   const head = document.createElement('div'); head.className = 'kind-head';
-  const title = document.createElement('h2'); title.textContent = kind;
   const st = document.createElement('span'); st.className = 'tail';
-  head.append(title, st);
+  const btn = document.createElement('button');
+  btn.onclick = () => begin(kind);
+  head.append(st, btn);
   // The strip's own dot, so a tab says whether its kind is up without being
   // opened — that is the thing someone wants from the tab they are not on.
   const tab = document.createElement('button');
@@ -427,18 +448,13 @@ function state(kind) {
   tab.onclick = () => show(kind);
   tabsBox.append(tab); kindsBox.append(sec);
 
-  const ctl = document.createElement('div'); ctl.className = 'kind-ctl';
-  const btn = document.createElement('button');
-  btn.onclick = () => begin(kind);
-  ctl.append(btn);
-
   const errBox = document.createElement('div');
   const envBox = document.createElement('div'); envBox.className = 'card';
   const runningBox = document.createElement('div'); runningBox.className = 'card';
   const runningHead = document.createElement('h3'); runningHead.textContent = 'Running';
   runningHead.hidden = true;
 
-  sec.append(head, ctl, errBox, envBox, runningHead, runningBox);
+  sec.append(head, errBox, envBox, runningHead, runningBox);
 
   s = { sec, tab, tick, tail: st, btn, errBox, envBox, runningBox, runningHead, up: null, error: null };
   sections.set(kind, s);
@@ -463,7 +479,7 @@ function renderKinds(list, labs, templates) {
     s.tail.textContent = e.ready ? 'ready' : (e.unauthorized ? 'key needed' : 'starting');
     s.tail.className = 'tail ' + (e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn'));
     s.tick.className = 'tick ' + (e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn'));
-    s.btn.textContent = s.up ? 'Get a ' + e.kind + ' lab' : 'Start ' + e.kind;
+    s.btn.textContent = s.up ? 'Get a lab' : 'Start ' + e.kind;
     s.btn.dataset.ready = s.up ? 'up' : 'down';
     // Held for the dialog, which reads it when the button is pressed.
     s.templates = templates[e.kind] || [];
@@ -499,16 +515,16 @@ function renderKinds(list, labs, templates) {
   kindsBox.classList.toggle('has', sections.size > 0);
 }
 // renderEnvs fills one kind's cluster status: one row per environment it runs,
-// with a dot, its state, how much of it is in use, and where its console is.
+// with how much of it is in use and, when it is down, why.
+//
+// The row does not repeat the state: the tab already carries the dot and the
+// panel heading already says the state in words, so a third copy here would be
+// the same fact three times. What is left is what those cannot say — the
+// environment's own name, its usage, and the reason it is not usable.
 function renderEnvs(s, e) {
   const box = document.createElement('div'); box.className = 'env';
   const top = document.createElement('div'); top.className = 'top';
-  // The dot is green when a lab can be made, amber while the cluster is
-  // coming up, and red when it is up but refuses our key.
-  const cls = e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn');
-  top.append(Object.assign(document.createElement('span'), { className: 'dot ' + cls }));
   top.append(Object.assign(document.createElement('span'), { className: 'name', textContent: e.id }));
-  top.append(Object.assign(document.createElement('span'), { className: 'tail', textContent: e.ready ? 'ready' : (e.unauthorized ? 'key needed' : 'starting') }));
   box.append(top);
   // One line for every kind, so the two are read the same way. applab lends out
   // named application slots, and a lab holds one for as long as it lasts;
@@ -520,11 +536,8 @@ function renderEnvs(s, e) {
       : ('application slots: ' + e.occupied + ' of ' + e.capacity + ' in use');
     box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: what }));
   }
-  if (e.console_url) {
-    const u = document.createElement('div'); u.className = 'msg';
-    const a = document.createElement('a'); a.href = e.console_url; a.textContent = e.console_url; a.target = '_blank'; a.rel = 'noopener';
-    u.append(a); box.append(u);
-  }
+  // Only when it is down: "starting" is already in the heading, so repeating it
+  // per environment would be noise, but the reason it is down is worth saying.
   if (!e.ready && e.message) box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.message }));
   s.envBox.append(box);
 }

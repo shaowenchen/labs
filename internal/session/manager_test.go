@@ -372,9 +372,11 @@ func TestStatusFallsBackToTheRecordedCount(t *testing.T) {
 // the environment's list at all. Counting that list alone made a lab read as
 // zero from the moment it was created until whatever the caller deployed
 // appeared — which is exactly when someone is looking at the page.
-func TestStatusCountsASlotASessionHoldsButNothingHasDeployed(t *testing.T) {
-	// The environment lists nothing: the slot's app is an idle record.
-	drv := &fakeDriver{ready: true}
+// The count and the list are the environment's own, so they agree even for a
+// slot whose app is recorded but not yet deployed — the state right after a lab
+// is handed out, when the caller most wants to see that it is there.
+func TestStatusCountsWhatTheEnvironmentLists(t *testing.T) {
+	drv := &fakeDriver{ready: true, live: []driver.Live{{ID: "lab-01", State: "created"}}}
 	m, _ := testManager(t, drv, testConfig())
 
 	got, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
@@ -387,27 +389,30 @@ func TestStatusCountsASlotASessionHoldsButNothingHasDeployed(t *testing.T) {
 
 	status := m.Status(context.Background())
 	if len(status) != 1 || status[0].Occupied != 1 {
-		t.Fatalf("occupied = %v, want 1 for the slot the session holds", status)
+		t.Fatalf("occupied = %v, want 1 from the environment's list", status)
 	}
 
 	live := m.Live(context.Background())
 	if len(live) != 1 || len(live[0].Items) != 1 {
-		t.Fatalf("Live = %+v, want one row for the held slot", live)
+		t.Fatalf("Live = %+v, want the environment's one row", live)
 	}
-	row := live[0].Items[0]
-	if row.ID != got.Session.App {
-		t.Errorf("row ID = %q, want the session's slot %q", row.ID, got.Session.App)
+	if row := live[0].Items[0]; row.ID != "lab-01" || row.State != "created" {
+		t.Errorf("row = %+v, want the environment's own row", row)
 	}
-	if row.State != "held" {
-		t.Errorf("row state = %q, want %q", row.State, "held")
+}
+
+// The environment cannot be read, so the service's own record is the only
+// evidence there is — better a stale number than a zero that looks empty.
+func TestStatusFallsBackToTheRecordWhenTheEnvironmentIsUnreadable(t *testing.T) {
+	drv := &fakeDriver{ready: true, liveErr: errors.New("unreachable")}
+	m, _ := testManager(t, drv, testConfig())
+
+	if _, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1"); err != nil {
+		t.Fatalf("Provision: %v", err)
 	}
-	// The reader dates an applab lab as the row's creation plus the TTL, so the
-	// two must land on the session's own expiry.
-	if row.ExpiresAt.Sub(row.CreatedAt) != 2*time.Hour {
-		t.Errorf("the row spans %s, want the session's 2h", row.ExpiresAt.Sub(row.CreatedAt))
-	}
-	if !row.ExpiresAt.Equal(got.Session.ExpiresAt) {
-		t.Errorf("row expires %s, want the session's %s", row.ExpiresAt, got.Session.ExpiresAt)
+	status := m.Status(context.Background())
+	if len(status) != 1 || status[0].Occupied != 1 {
+		t.Fatalf("occupied = %v, want the slot the record holds", status)
 	}
 }
 
@@ -593,7 +598,11 @@ func TestProvisionWithNoTemplateIsUntouched(t *testing.T) {
 // The list of choices is the first environment that can answer. A kind whose
 // environments cannot be read yields nothing rather than an error, because a lab
 // can still be asked for — it just gets the environment's default.
-func TestChoicesForReadsTheEnvironment(t *testing.T) {
+// A kind's templates are read once and kept, because /config is polled every
+// few seconds and reading them means a request to the environment. A read that
+// fails is not kept, so an environment coming up starts offering its templates
+// without waiting for a restart.
+func TestChoicesForReadsOnceAndKeepsWhatItRead(t *testing.T) {
 	drv := &fakeDriver{ready: true, choices: []driver.Choice{{ID: "e2b", Title: "E2B"}}}
 	m, _ := testManager(t, drv, testConfig())
 
@@ -601,9 +610,25 @@ func TestChoicesForReadsTheEnvironment(t *testing.T) {
 	if len(got) != 1 || got[0].ID != "e2b" {
 		t.Fatalf("ChoicesFor = %+v, want the driver's one choice", got)
 	}
-
+	// The environment goes away, but the list it gave is still the list.
 	drv.choicesErr = errors.New("unreachable")
+	if got := m.ChoicesFor(context.Background(), model.KindApplab); len(got) != 1 {
+		t.Errorf("a cached list should survive its environment, got %+v", got)
+	}
+}
+
+func TestChoicesForDoesNotCacheAReadThatFailed(t *testing.T) {
+	drv := &fakeDriver{ready: true, choicesErr: errors.New("unreachable")}
+	m, _ := testManager(t, drv, testConfig())
+
 	if got := m.ChoicesFor(context.Background(), model.KindApplab); len(got) != 0 {
 		t.Errorf("an unreachable environment should yield no choices, got %+v", got)
+	}
+	// It comes back, and the next read finds the templates rather than a cached
+	// absence that would hide the picker for as long as the process lives.
+	drv.choicesErr = nil
+	drv.choices = []driver.Choice{{ID: "e2b", Title: "E2B"}}
+	if got := m.ChoicesFor(context.Background(), model.KindApplab); len(got) != 1 {
+		t.Errorf("ChoicesFor = %+v, want the list once the environment answers", got)
 	}
 }

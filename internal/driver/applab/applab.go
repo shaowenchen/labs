@@ -202,18 +202,15 @@ func (d *Driver) Release(ctx context.Context, env model.Env, sess model.Session)
 	return nil
 }
 
-// Live lists the slots that have something deployed in them. It is scoped to
-// the configured slots — an app a person made by hand is not this service's to
-// report — and reads the state from the environment, so it reflects what is
-// there rather than what this service last recorded.
+// Live lists the slots the environment has an app for, in use and idle alike.
+// It is scoped to the configured slots — an app a person made by hand is not
+// this service's to report — and reads the state from the environment, so it
+// reflects what is there rather than what this service last recorded.
 //
-// A slot whose app reports "created" is skipped: that state means no Deployment
-// is behind it, so there is nothing running to list. It is deliberately not
-// treated as "unused" anywhere else — a lab that was handed out and whose app
-// has since gone back to idle reads "created" too, and only the session's own
-// record says whether anyone holds it. This list is therefore the slots that
-// are *deployed*, and the caller unions it with the sessions it knows about to
-// get the slots that are in use.
+// Every slot the environment lists is one of this service's, and the count is
+// that list: a slot an earlier session held is not free again until its app is
+// gone, whatever the app's own state says. The state is still carried out on
+// each entry for whoever wants to read it.
 //
 // No key is read or returned: the key is a separate route (/key), and a listing
 // that carried it would hand out a credential per row. ExpiresAt is left zero —
@@ -231,28 +228,28 @@ func (d *Driver) Live(ctx context.Context, env model.Env) ([]driver.Live, error)
 		return nil, fmt.Errorf("applab: list apps: %w", err)
 	}
 
-	// Only this environment's own slots are reported, so an app a person made by
-	// hand is not counted as one of ours, and only the ones with something
-	// deployed behind them.
+	// Every app in one of this environment's own slots counts as in use. The
+	// slot filter keeps an app a person made by hand from being counted as one
+	// of ours, and therefore from pushing the count past the capacity the slots
+	// define.
+	//
+	// The app's status is deliberately not consulted. A slot whose app is
+	// recorded but not yet deployed — the state right after a lab is handed out,
+	// before anything is pushed into it — is in use, and an app record is what
+	// the environment itself says it has.
 	want := map[string]bool{}
 	for _, slot := range env.Slots {
 		want[slot] = true
 	}
 	live := make([]driver.Live, 0, len(apps))
 	for _, a := range apps {
-		if !want[a.ID] || a.Status == appStatusCreated {
+		if !want[a.ID] {
 			continue
 		}
 		live = append(live, driver.Live{ID: a.ID, State: a.Status, CreatedAt: a.CreatedAt})
 	}
 	return live, nil
 }
-
-// appStatusCreated is applab's state for an app record with no Deployment behind
-// it. It is an idle slot's ordinary state — and equally the state a slot goes
-// back to once a lab's app has been torn down, so it says "nothing is deployed",
-// not "nobody is using this".
-const appStatusCreated = "created"
 
 // Choices is nil: applab hands out a named application slot and there is nothing
 // about it to pick. A lab there is the slot plus a key, and the slot is this
