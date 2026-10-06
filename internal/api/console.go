@@ -206,45 +206,47 @@ const consoleHTML = `<!doctype html>
   .tabs .tick.warn { background: var(--warn); }
   .tabs .tick.err { background: var(--err); }
 
-  /* The action closes the tab's panel: what the kind is, what it is running,
-     and then the one thing you can do about it. Sat under the tabs it pushed
-     the state of the kind down the page and read as a heading; at the foot it is
-     the last line of the same reading. The rule above it separates the action
-     from what it acts on, and is drawn even when the list above is empty — the
-     separation is between the two, not between rows. */
-  .actions {
-    display: flex; align-items: center; justify-content: flex-end;
-    gap: 10px; flex-wrap: wrap;
-    margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line-soft);
-  }
-  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
-  /* The template picker and the button are one row of things used in sequence,
-     so they are sized to each other rather than to their own content. */
-  .controls select, .controls button {
-    font-size: .9rem; line-height: 1.35; padding: 9px 14px;
-    border-radius: var(--radius-sm); border: 1px solid var(--line);
-  }
-  .controls select {
-    font-family: inherit; color: var(--fg); background: var(--surface);
-    cursor: pointer; max-width: 16rem;
-  }
-  .controls select[hidden] { display: none; }
-  .controls select:hover { border-color: var(--muted); }
-  .controls select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .controls button { padding: 9px 18px; border-color: transparent; white-space: nowrap; }
-  /* A state, as a word with a dot before it rather than a pill: the pill drew a
-     box around a single word, which on a page this quiet read as a button. */
+  /* ── the kind's two states ──────────────────────────────────────────── */
+  /* The cluster and the application answer different questions and are read at
+     different times: is anything serving this kind at all, and is what it hands
+     out usable. They are two dots in a fixed order, stacked above what the kind
+     is running, so "the environment is up but its key was refused" cannot be
+     read as one state or the other. A dot is a dot rather than a pill: the pill
+     drew a box around a word, which on a page this quiet read as a button. */
+  .states { margin-top: 14px; display: flex; flex-direction: column; gap: 5px; }
   .state {
-    display: inline-flex; align-items: center; gap: 7px;
+    display: flex; align-items: center; gap: 8px;
     font-size: .87rem; color: var(--muted);
   }
   .state::before {
     content: ''; width: 8px; height: 8px; border-radius: 50%;
     background: currentColor; flex: none;
   }
+  .state .what { width: 4.75rem; flex: none; color: var(--muted); }
   .state.ok { color: var(--ok); }
   .state.warn { color: var(--warn); }
   .state.err { color: var(--err); }
+  .state.ok .what, .state.warn .what, .state.err .what { color: var(--muted); }
+
+  /* The template is a choice, and the row it sits on is where the choice is
+     made: its label and the picker share a baseline so the picker starts in the
+     same column whatever language its label is in — the labels are not the same
+     width, and a picker that starts wherever the word ends reads as a mistake. */
+  .choice {
+    display: grid; grid-template-columns: 7rem 1fr; align-items: center;
+    gap: 12px; margin-top: 12px;
+  }
+  .choice[hidden] { display: none; }
+  .choice .label { font-size: .87rem; color: var(--muted); }
+  .choice select {
+    font: inherit; font-size: .9rem; line-height: 1.35; padding: 8px 12px;
+    max-width: 22rem; width: 100%;
+    color: var(--fg); background: var(--surface);
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    cursor: pointer;
+  }
+  .choice select:hover { border-color: var(--muted); }
+  .choice select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   /* What the environment is carrying, then the labs in it — the count is the
      table's own summary line, so it sits against it with no heading between. */
@@ -276,6 +278,15 @@ const consoleHTML = `<!doctype html>
   .labs-table .st { font: .82rem/1.5 var(--mono); color: var(--muted); }
   .labs-table .meta { color: var(--muted); white-space: nowrap; }
   .empty { color: var(--muted); font-size: .87rem; margin: 4px 0 0; }
+  /* The action closes the tab's panel: what the kind is, what it is running,
+     and then the one thing you can do about it. The rule above it separates the
+     action from what it acts on, and is drawn even when the list above is empty
+     — the separation is between the two, not between rows. */
+  .actions {
+    display: flex; justify-content: flex-end;
+    margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line-soft);
+  }
+  .actions button { padding: 9px 18px; border-radius: var(--radius-sm); white-space: nowrap; }
   /* Why an environment is not up, in the environment's own words. It is the one
      thing the state word cannot say, so it is the only prose in the panel. */
   .reason {
@@ -379,15 +390,15 @@ const consoleHTML = `<!doctype html>
   <div id="panel">
     <div class="tabs" id="kinds" role="tablist" aria-label="kind of lab" hidden></div>
     <div id="error"></div>
-    <div class="usage" id="usage"></div>
+    <div id="usage"></div>
+    <div class="choice" id="choice" hidden>
+      <label class="label" id="tmpl-label" for="template">Template</label>
+      <select id="template"></select>
+    </div>
     <div class="reason" id="reason"></div>
     <div class="labs" id="labs"></div>
     <div class="actions">
-      <span class="state" id="state"></span>
-      <div class="controls">
-        <select id="template" aria-label="template" hidden></select>
-        <button id="create">Create a lab</button>
-      </div>
+      <button id="create">Create a lab</button>
     </div>
   </div>
   <footer id="build"></footer>
@@ -408,12 +419,13 @@ const consoleHTML = `<!doctype html>
 const status = document.getElementById('status');
 const panel = document.getElementById('panel');
 const build = document.getElementById('build');
-const stateEl = document.getElementById('state');
+const usageBox = document.getElementById('usage');
+const tmplLabel = document.getElementById('tmpl-label');
+const choiceBox = document.getElementById('choice');
 const tabsBox = document.getElementById('kinds');
 const tmplSel = document.getElementById('template');
 const createBtn = document.getElementById('create');
 const errBox = document.getElementById('error');
-const usageBox = document.getElementById('usage');
 const reasonBox = document.getElementById('reason');
 const labsBox = document.getElementById('labs');
 const km = document.getElementById('key-modal');
@@ -446,10 +458,13 @@ const STRINGS = {
   en: {
     'lead': 'Get a working environment for a couple of hours.',
     'kind.aria': 'kind of lab',
-    'template.aria': 'template',
     'state.ready': 'ready',
     'state.key': 'key needed',
     'state.starting': 'starting',
+    'state.gone': 'not answering',
+    'what.cluster': 'cluster',
+    'what.app': 'app',
+    'tmpl.label': 'Template',
     'usage.sandboxes': 'sandboxes: {n} of {cap} in use',
     'usage.slots': 'application slots: {n} of {cap} in use',
     'create': 'Create a lab',
@@ -502,10 +517,13 @@ const STRINGS = {
   zh: {
     'lead': '获取一个可用的环境，有效期两小时。',
     'kind.aria': '实验室类型',
-    'template.aria': '模板',
     'state.ready': '就绪',
     'state.key': '需要密钥',
     'state.starting': '启动中',
+    'state.gone': '无法访问',
+    'what.cluster': '集群',
+    'what.app': '应用',
+    'tmpl.label': '模板',
     'usage.sandboxes': '沙箱：{cap} 个中占用 {n} 个',
     'usage.slots': '应用槽位：{cap} 个中占用 {n} 个',
     'create': '创建实验室',
@@ -598,7 +616,7 @@ function setLang(code) {
 function renderStatic() {
   leadEl.textContent = t('lead');
   tabsBox.setAttribute('aria-label', t('kind.aria'));
-  tmplSel.setAttribute('aria-label', t('template.aria'));
+  tmplLabel.textContent = t('tmpl.label');
   langBox.setAttribute('aria-label', t('lang.aria'));
 }
 // renderLang draws the switch and keeps the document's own language honest, so
@@ -749,29 +767,61 @@ function render() {
     tmplSel.append(opt);
   });
   if (choices.some(o => o.id === keepT)) tmplSel.value = keepT;
-  tmplSel.hidden = choices.length === 0;
+  choiceBox.hidden = choices.length === 0;
 
-  // The state and how much is in use, for the kind being read. An environment
-  // that is down is never asked how much it holds — there is nothing at the
-  // other end to answer — so its count is zero by construction, and "0 of 8 in
-  // use" under "starting" is a number nobody produced, read by someone deciding
-  // whether to press the button. The reason line is the honest answer there.
+  // The kind's two states, which are two different facts. The cluster is the
+  // environment this service drives: is a run going, is anything serving the
+  // address. The app is what that environment hands out: is the run it made
+  // reachable from here. The second is only asked when the first is up — there
+  // is nothing at the other end of a request to a cluster that is not running —
+  // so "no run" is the first one's answer, not the second's.
+  //
+  // They are drawn separately because the failure they rule out is a real one:
+  // a cluster that is serving and refusing the key this page holds used to be a
+  // single word on the page ("key needed"), which reads as the environment
+  // being down when it is in fact up and answering.
   const env = list.find(e => e.kind === kind);
   const up = !!(env && env.ready);
-  stateEl.textContent = !env ? '' : (env.ready ? t('state.ready') : (env.unauthorized ? t('state.key') : t('state.starting')));
-  stateEl.className = 'state ' + (up ? 'ok' : (env && env.unauthorized ? 'err' : 'warn'));
-  stateEl.hidden = !env;
+  const cluster = !env ? null
+    : env.ready ? { cls: 'ok', word: t('state.ready') }
+      : env.unauthorized ? { cls: 'err', word: t('state.gone') }
+        : { cls: 'warn', word: t('state.starting') };
+  const app = !up ? null
+    : env.unauthorized ? { cls: 'err', word: t('state.key') }
+      : { cls: 'ok', word: t('state.ready') };
+  usageBox.replaceChildren();
+  if (cluster || app) {
+    const box = document.createElement('div'); box.className = 'states';
+    [[t('what.cluster'), cluster], [t('what.app'), app]].forEach(([what, st]) => {
+      // The app's line is only there once the cluster is up and there is an app
+      // to describe; below that it is a second dot saying nothing.
+      if (!st) return;
+      const line = document.createElement('div'); line.className = 'state ' + st.cls;
+      const w = document.createElement('span'); w.className = 'what'; w.textContent = what;
+      const v = document.createElement('span'); v.textContent = st.word;
+      line.append(w, v);
+      box.append(line);
+    });
+    usageBox.append(box);
+  }
+  // How much the kind holds is the cluster's number and only exists when there
+  // is a cluster to ask: an environment that is not up is never asked, so its
+  // count is zero by construction, and "0 of 8 in use" under "starting" is a
+  // number nobody produced being read by someone deciding whether to press the
+  // button. The reason line is the honest answer there.
   const capacity = env && env.capacity;
-  usageBox.textContent = (up && capacity)
-    ? (kind === 'sandboxlab'
+  if (up && capacity) {
+    const n = document.createElement('div'); n.className = 'usage';
+    n.textContent = kind === 'sandboxlab'
       ? t('usage.sandboxes', { n: env.occupied, cap: capacity })
-      : t('usage.slots', { n: env.occupied, cap: capacity }))
-    : '';
+      : t('usage.slots', { n: env.occupied, cap: capacity });
+    usageBox.append(n);
+  }
   reasonBox.textContent = (env && !env.ready && env.message) ? env.message : '';
-  // The button's word follows the environment, not the request: a kind that is
-  // up hands out a lab, and one that is not is what the press starts. It is
-  // never hidden — a kind with nothing running still needs a way to ask, since
-  // asking is what starts it.
+  // The button's word follows the cluster, not the request: a kind that is up
+  // hands out a lab, and one that is not is what the press starts. It is never
+  // hidden — a kind with nothing running still needs a way to ask, since asking
+  // is what starts it.
   createBtn.textContent = up ? t('create') : t('start');
   createBtn.disabled = !kind;
 
@@ -949,7 +999,7 @@ async function loadStatus() {
 async function create() {
   const kind = currentKind();
   if (!kind) return;
-  const template = tmplSel.hidden ? '' : tmplSel.value;
+  const template = choiceBox.hidden ? '' : tmplSel.value;
   error = '';
   createBtn.disabled = true;
   createBtn.textContent = t('creating');
