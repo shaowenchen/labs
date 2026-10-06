@@ -158,15 +158,51 @@ const consoleHTML = `<!doctype html>
     border-radius: var(--radius);
     box-shadow: var(--shadow);
   }
-  /* The state on the left; the controls that make a lab on the right, laid out
-     in the order they are used — which kind, which template, then the button.
-     Wrapping rather than scrolling keeps all of it on the page at any width. */
+  /* The switch on the left, what makes a lab on the right. The two sides are
+     laid out independently because they are: the switch grows a row per kind
+     the deployment serves, and the action column is the same whatever is
+     selected. */
   .head {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 14px; flex-wrap: wrap;
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 16px; flex-wrap: wrap;
   }
-  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  /* The two pickers and the button are one row of things you use in sequence,
+  /* ── the kind switch ────────────────────────────────────────────────── */
+  /* A vertical pair of segments rather than a dropdown. A select hides every
+     kind but the chosen one behind a click and has nowhere to put a state: the
+     kind you are not reading is exactly the one whose state you want, and with
+     two of them there is no reason not to show both at once. */
+  .switch {
+    display: inline-flex; flex-direction: column; gap: 2px; flex: none;
+    padding: 3px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--line-soft);
+  }
+  .switch[hidden] { display: none; }
+  .switch button {
+    font: inherit; font-size: .87rem; font-weight: 550; line-height: 1.3;
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 14px 6px 10px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--muted); cursor: pointer;
+    white-space: nowrap; text-align: left;
+  }
+  .switch button:hover { color: var(--fg); }
+  .switch button[aria-checked="true"] {
+    background: var(--surface); color: var(--fg);
+    box-shadow: 0 1px 2px rgba(20,20,30,.06);
+  }
+  .switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .switch .tick { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--muted); }
+  .switch .tick.ok { background: var(--ok); }
+  .switch .tick.warn { background: var(--warn); }
+  .switch .tick.err { background: var(--err); }
+
+  /* The state, the template and the button, stacked on the right and read top
+     to bottom in the order they are used. */
+  .actions {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
+    margin-left: auto;
+  }
+  .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+  /* The template picker and the button are one row of things used in sequence,
      so they are sized to each other rather than to their own content. */
   .controls select, .controls button {
     font-size: .9rem; line-height: 1.35; padding: 9px 14px;
@@ -176,9 +212,9 @@ const consoleHTML = `<!doctype html>
     font-family: inherit; color: var(--fg); background: var(--surface);
     cursor: pointer; max-width: 16rem;
   }
+  .controls select[hidden] { display: none; }
   .controls select:hover { border-color: var(--muted); }
   .controls select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-  .controls select:disabled { color: var(--muted); cursor: default; }
   .controls button { padding: 9px 18px; border-color: transparent; white-space: nowrap; }
   /* A state, as a word with a dot before it rather than a pill: the pill drew a
      box around a single word, which on a page this quiet read as a button. */
@@ -302,11 +338,13 @@ const consoleHTML = `<!doctype html>
   <div id="status"></div>
   <div id="panel">
     <div class="head">
-      <span class="state" id="state"></span>
-      <div class="controls">
-        <select id="kind" aria-label="kind of lab"></select>
-        <select id="template" aria-label="template" hidden></select>
-        <button id="create">Create a lab</button>
+      <div class="switch" id="kinds" role="radiogroup" aria-label="kind of lab" hidden></div>
+      <div class="actions">
+        <span class="state" id="state"></span>
+        <div class="controls">
+          <select id="template" aria-label="template" hidden></select>
+          <button id="create">Create a lab</button>
+        </div>
       </div>
     </div>
     <div id="error"></div>
@@ -333,7 +371,7 @@ const status = document.getElementById('status');
 const panel = document.getElementById('panel');
 const build = document.getElementById('build');
 const stateEl = document.getElementById('state');
-const kindSel = document.getElementById('kind');
+const kindsBox = document.getElementById('kinds');
 const tmplSel = document.getElementById('template');
 const createBtn = document.getElementById('create');
 const errBox = document.getElementById('error');
@@ -352,10 +390,25 @@ const kmError = document.getElementById('km-error');
 // create that was refused can start an environment — so the redraws are driven
 // by this rather than by the poll alone.
 let cfg = {};
-// kind is the switch's value. It is read from the element when a request is
-// made rather than mirrored into a variable, so there is one place the answer
-// lives and no copy to fall out of step with it.
-function currentKind() { return kindSel.value; }
+// kind is the kind being read. It is state rather than a read of the switch,
+// because the switch is redrawn on every poll: the rows are updated in place
+// rather than rebuilt — rebuilding would replace a button under the pointer —
+// so there is no element whose value is the answer.
+let kind = '';
+// switchRows holds one live row per kind, so the switch is updated rather than
+// rebuilt on every poll. Keyed by kind, in the order the kinds are first seen.
+const switchRows = new Map();
+// rememberedKind is the kind the last visit was left on, so a reload comes back
+// to it. It is a read of browser storage, which may be unavailable — a private
+// window, or cleared data — so it may simply find nothing.
+function rememberedKind() {
+  try { return localStorage.getItem('labs.kind') || ''; } catch (e) { return ''; }
+}
+// rememberKind keeps that choice for the next visit.
+function rememberKind(k) {
+  try { localStorage.setItem('labs.kind', k); } catch (e) {}
+}
+function currentKind() { return kind; }
 function row(k, v, cls) {
   const d = document.createElement('div'); d.className = 'row' + (cls ? ' ' + cls : '');
   const kk = document.createElement('div'); kk.className = 'k'; kk.textContent = k;
@@ -377,14 +430,66 @@ function problems(list) {
   box.append(hint);
   return box;
 }
+// renderSwitch draws the kind switch: one segment per kind the deployment
+// serves, the kind being read marked as checked.
+//
+// The rows are grown once and then updated, never rebuilt. The poll runs every
+// five seconds and this is a row of buttons: replacing one between a pointer
+// going down and coming up swallows the click, and the row a person navigates
+// with is the last place that should happen. So a row is created when its kind
+// first appears and removed when it goes away — which a deployment reconfigured
+// under us can do — and otherwise only its label and state are rewritten.
+//
+// Each segment carries the kind's own state as a dot. That is the thing a
+// dropdown cannot show: the kind you are not reading is exactly the one whose
+// state you want, and with a handful of kinds there is no reason to hide it
+// behind a click.
+function renderSwitch(served) {
+  const want = new Set(served.map(e => e.kind));
+  for (const [k, row] of switchRows) {
+    if (!want.has(k)) { row.remove(); switchRows.delete(k); }
+  }
+  served.forEach(e => {
+    let row = switchRows.get(e.kind);
+    if (!row) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.setAttribute('role', 'radio');
+      btn.dataset.kind = e.kind;
+      const tick = document.createElement('span'); tick.className = 'tick';
+      const name = document.createElement('span'); name.textContent = e.kind;
+      btn.append(tick, name);
+      btn.onclick = () => selectKind(e.kind);
+      kindsBox.append(btn);
+      row = { btn, tick };
+      switchRows.set(e.kind, row);
+    }
+    row.btn.setAttribute('aria-checked', e.kind === kind ? 'true' : 'false');
+    const state = e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn');
+    row.tick.className = 'tick ' + state;
+    row.btn.title = e.ready ? e.kind + ': ready' : (e.unauthorized ? e.kind + ': key needed' : e.kind + ': starting');
+  });
+  kindsBox.hidden = served.length === 0;
+}
+// selectKind is the switch: it changes what the panel is about, remembers the
+// choice so a reload comes back to it, and drops any refusal that was on screen
+// — an error is an answer to the kind that was showing, not to the one just
+// chosen.
+function selectKind(k) {
+  if (k === kind) return;
+  kind = k;
+  rememberKind(k);
+  error = ''; retryable = false; problems_ = null;
+  render();
+}
 // render draws the whole page from one reading of /config.
 //
 // There is one panel and one kind on screen at a time, so this is a redraw of
 // that panel rather than a reconciliation of several: the kind switch decides
 // what the rest of it is about, and everything below the head belongs to the
-// kind it names. Nothing here rebuilds the controls themselves — the poll runs
-// every five seconds and a select replaced under a click is a select that
-// cannot be used.
+// kind it names. The switch itself is updated in place rather than rebuilt —
+// the poll runs every five seconds, and a button replaced under a click cannot
+// be clicked.
 function render() {
   const list = cfg.configured === false ? [] : (cfg.environments || []);
   const labs = cfg.labs || [];
@@ -392,32 +497,19 @@ function render() {
 
   // A kind that has gone away — a deployment reconfigured under us — must not
   // be the one being read, or the panel below describes an environment that no
-  // longer exists. The switch is refilled from what is served, and a request
-  // for one that is not is not possible once it is off the list.
-  const wanted = kindSel.value;
-  let keep = '';
-  kindSel.replaceChildren();
-  list.forEach(e => {
-    if (!e.kind) return;
-    const o = document.createElement('option');
-    o.value = e.kind; o.textContent = e.kind;
-    kindSel.append(o);
-    if (e.kind === wanted) keep = e.kind;
-  });
-  // The remembered kind, when the switch is being filled for the first time —
-  // a reload should come back to what was being looked at. Browser storage can
-  // be unavailable (a private window, cleared data), so this is a read that may
-  // simply find nothing.
-  let remembered = '';
-  try { remembered = localStorage.getItem('labs.kind') || ''; } catch (e) {}
-  const pick = (wanted && keep) ? keep
-    : (list.some(e => e.kind === remembered) ? remembered : (list[0] && list[0].kind) || '');
-  if (pick) kindSel.value = pick;
+  // longer exists. One served is kept if it still is; otherwise the remembered
+  // one, and failing that the first.
+  const served = list.filter(e => e.kind);
+  if (!served.some(e => e.kind === kind)) {
+    const remembered = rememberedKind();
+    const pick = served.find(e => e.kind === remembered) || served[0];
+    kind = pick ? pick.kind : '';
+  }
+  renderSwitch(served);
 
   // The template picker is shown for exactly the kinds that offer a choice, and
   // is filled from that kind's list each time — so it can never be stale, and
   // there is no second copy of the templates to keep in step with the poll.
-  const kind = pick;
   const choices = templates[kind] || [];
   const keepT = tmplSel.value;
   tmplSel.replaceChildren();
@@ -714,17 +806,8 @@ function keyRow(key) {
   v.append(code, copy);
   return r;
 }
-// The controls. The switch is the one thing that changes what the page is
-// about, so it is what redraws it — and it remembers the choice, so a reload
-// comes back to the kind being read. Template is refilled by render() for
-// whichever kind is chosen; the button reads both at the moment it is pressed.
-kindSel.onchange = () => {
-  try { localStorage.setItem('labs.kind', kindSel.value); } catch (e) {}
-  // A refusal was about the kind that was on screen; it is not an answer to
-  // the one just chosen, so it does not survive the switch.
-  error = ''; renderError();
-  render();
-};
+// The button is the one action on the page; the kind switch that changes what
+// the page is about is wired per row in renderSwitch.
 createBtn.onclick = create;
 loadStatus();
 // Poll, so an environment that is booting becomes a lab without a reload. The
