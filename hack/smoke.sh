@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
-# The real end-to-end path: build the service, point it at a real repository,
-# start an environment on demand, and take a lab from it.
+# The real end-to-end path: build the service, start an environment on demand,
+# and take a lab from it.
 #
-# It needs two things from you and does nothing without them:
+# It needs one thing from you and does nothing without it:
 #
-#   LABS_GITHUB_TOKEN   a token with Actions: write on the repository
-#   LABS_REPOS          owner/repo, comma-separated
+#   LABS_GITHUB_TOKEN   a token with Actions: write on the repositories
 #
-# Everything else takes the default — including the key both sides use. It runs
-# the service on a port of its own, so it does not touch a real deployment.
+# Everything else takes the default — the repositories (both projects), the key
+# both sides use, and the domains. Set LABS_REPOS only to narrow it to one
+# repository. It runs the service on a port of its own, so it does not touch a
+# real deployment.
 #
 # The first run is slow: creating the lab is what dispatches the run, and the
 # environment is about ten minutes of cluster and control-plane boot. The script
@@ -17,7 +18,6 @@
 set -euo pipefail
 
 : "${LABS_GITHUB_TOKEN:?set LABS_GITHUB_TOKEN to a token with Actions: write}"
-: "${LABS_REPOS:?set LABS_REPOS, e.g. shaowenchen/applab}"
 
 PORT="${LABS_SMOKE_PORT:-18080}"
 BASE="http://127.0.0.1:${PORT}"
