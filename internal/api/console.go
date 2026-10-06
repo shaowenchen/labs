@@ -195,11 +195,19 @@ const consoleHTML = `<!doctype html>
   }
   .tabs button:hover { color: var(--fg); }
   /* The active tab is drawn as the panel continuing upward: same background,
-     same border, its own bottom edge removed into the panel's top border. */
+     same border, its own bottom edge removed into the panel's top border. That
+     alone was too quiet — on a strip of two the difference between the card's
+     white and the page's off-white is a shade, and the tab you are reading has
+     to be findable at a glance. So the one that is on also carries the accent:
+     a bar along its top edge and its own label, which is a difference in kind
+     rather than in shade. The bar is an inset shadow, not a border, so nothing
+     shifts by the pixel a second border would add. */
   .tabs button[aria-selected="true"] {
-    background: var(--surface); color: var(--fg);
+    background: var(--surface); color: var(--accent);
     border-color: var(--line); border-bottom: 1px solid var(--surface);
+    box-shadow: inset 0 2px 0 var(--accent);
   }
+  .tabs button[aria-selected="true"]:hover { color: var(--accent); }
   .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .tabs .tick { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--muted); }
   .tabs .tick.ok { background: var(--ok); }
@@ -223,14 +231,17 @@ const consoleHTML = `<!doctype html>
      drew a box around a word, which on a page this quiet read as a button. */
   .states { margin-top: 14px; display: flex; flex-direction: column; gap: 5px; }
   .state {
-    display: flex; align-items: center; gap: 8px;
-    font-size: .87rem; color: var(--muted);
+    display: grid; grid-template-columns: 8px auto 1fr; align-items: center;
+    column-gap: 8px; font-size: .87rem; color: var(--muted);
   }
   .state::before {
     content: ''; width: 8px; height: 8px; border-radius: 50%;
     background: currentColor; flex: none;
   }
-  .state .what { width: 4.75rem; flex: none; color: var(--muted); }
+  /* The label is the same width in both lines, so the values start in one
+     column: a stack of two where each value begins wherever its own label ends
+     reads as two unrelated lines rather than one block with two rows. */
+  .state .what { width: 4.75rem; color: var(--muted); }
   .state.ok { color: var(--ok); }
   .state.warn { color: var(--warn); }
   .state.err { color: var(--err); }
@@ -399,15 +410,15 @@ const consoleHTML = `<!doctype html>
     <div class="tabs" id="kinds" role="tablist" aria-label="kind of lab" hidden></div>
     <div class="blurb" id="blurb"></div>
     <div id="error"></div>
-    <div id="usage"></div>
     <div class="choice" id="choice" hidden>
       <label class="label" id="tmpl-label" for="template">Template</label>
       <select id="template"></select>
     </div>
     <div class="reason" id="reason"></div>
     <div class="labs" id="labs"></div>
+    <div id="usage"></div>
     <div class="actions">
-      <button id="create">Create a lab</button>
+      <button id="create">Start an environment</button>
     </div>
   </div>
   <footer id="build"></footer>
@@ -479,9 +490,8 @@ const STRINGS = {
     'tmpl.label': 'Template',
     'usage.sandboxes': 'sandboxes: {n} of {cap} in use',
     'usage.slots': 'application slots: {n} of {cap} in use',
-    'create': 'Create a lab',
-    'start': 'Start a lab',
-    'creating': 'Creating…',
+    'env.start': 'Start an environment',
+    'creating': 'Starting…',
     'col.id': 'id', 'col.state': 'state', 'col.created': 'created', 'col.expires': 'expires',
     'empty': 'Nothing running yet.',
     'lang.aria': 'language',
@@ -540,9 +550,8 @@ const STRINGS = {
     'tmpl.label': '模板',
     'usage.sandboxes': '沙箱：{cap} 个中占用 {n} 个',
     'usage.slots': '应用槽位：{cap} 个中占用 {n} 个',
-    'create': '创建实验室',
-    'start': '启动实验室',
-    'creating': '创建中…',
+    'env.start': '启动环境',
+    'creating': '启动中…',
     'col.id': 'ID', 'col.state': '状态', 'col.created': '创建于', 'col.expires': '到期',
     'empty': '暂无运行中的实例。',
     'lang.aria': '语言',
@@ -838,11 +847,13 @@ function render() {
     usageBox.append(n);
   }
   reasonBox.textContent = (env && !env.ready && env.message) ? env.message : '';
-  // The button's word follows the cluster, not the request: a kind that is up
-  // hands out a lab, and one that is not is what the press starts. It is never
-  // hidden — a kind with nothing running still needs a way to ask, since asking
-  // is what starts it.
-  createBtn.textContent = up ? t('create') : t('start');
+  // One word for both states. The button says what pressing it asks for — an
+  // environment — not what the environment happens to be doing right now; that
+  // is what the lines above it are for. A kind that is up still hands out a lab
+  // and one that is not is what the press starts, and the two differ in what
+  // comes back, not in what is being asked for. It is never hidden: a kind with
+  // nothing running still needs a way to ask, since asking is what starts it.
+  createBtn.textContent = t('env.start');
   createBtn.disabled = !kind;
 
   renderLabs(labs.filter(l => l.kind === kind));
@@ -851,6 +862,31 @@ function render() {
   // unconfigured deployment shows an empty outline.
   panel.classList.toggle('has', !!kind);
   renderError();
+  maybeAutoStart(kind, env, up);
+}
+// maybeAutoStart brings a kind up by itself, so that a visitor arriving at a
+// kind nobody has started yet is not the one who has to work out that they can.
+//
+// The condition is the one the page already draws as "starting": the kind is
+// served and the page is reading it, its environment is neither up nor
+// unauthorized, and nothing of the visitor's is already being made. The request
+// is the same one the button sends, and the server answers it the same way —
+// with the environment a few minutes out — so what this changes is who asks
+// first, not what is asked for.
+//
+// It is guarded in time, not in state. A trigger that only ever fired once
+// would leave a kind that came up and then went down sitting idle, so the page
+// keeps asking on the poll's slow beat; the gap is well over the couple of
+// minutes an environment takes, which is what keeps one down environment from
+// being asked about twice a second. The request goes through the visitor's own
+// rate limit, and that limit therefore counts auto-starts as well as presses.
+let autoStartAt = 0;
+const autoStartGap = 120000; // 2 min, about one environment's boot
+function maybeAutoStart(kind, env, up) {
+  if (!kind || !env || env.ready || env.unauthorized) return;
+  if (busy || error || Date.now() - autoStartAt < autoStartGap) return;
+  autoStartAt = Date.now();
+  create({ silent: true });
 }
 // renderLabs draws what the kind is running as a table, one row per instance.
 //
@@ -1016,35 +1052,53 @@ async function loadStatus() {
 // about, and the poll is asked for again immediately: a refused request is one
 // that may have started an environment, and the page should show that rather
 // than sit on a state it now knows is old.
-async function create() {
+//
+// opts.silent is how the page's own trigger asks (see maybeAutoStart). It does
+// not touch the button, because nobody pressed it, and it does not draw a
+// retryable refusal: "one is being started" is the answer that trigger is
+// after, not a fault the visitor should be shown. A failure that is not
+// retryable is still drawn — that one is about the deployment, not about
+// waiting.
+async function create(opts) {
+  const silent = !!(opts && opts.silent);
   const kind = currentKind();
-  if (!kind) return;
+  if (!kind || busy) return;
+  busy = true;
   const template = choiceBox.hidden ? '' : tmplSel.value;
-  error = '';
-  createBtn.disabled = true;
-  createBtn.textContent = t('creating');
-  renderError();
+  if (!silent) {
+    error = '';
+    createBtn.disabled = true;
+    createBtn.textContent = t('creating');
+    renderError();
+  }
   const req = { kind: kind };
   if (template) req.template = template;
   try {
     const { ok, status: code, body } = await fetchJSON('api/v1/labs', {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(req) });
     if (!ok) {
-      showError(body, code);
+      if (!silent || !body.retryable) showError(body, code);
       loadStatus(); // show the environment the request just started
       return;
     }
     showLab(body.data, kind);
     loadStatus(); // the new lab appears in the running list on the next poll
   } catch (e) {
-    error = t('err.reach', { m: e.message });
-    renderError();
+    if (!silent) {
+      error = t('err.reach', { m: e.message });
+      renderError();
+    }
   } finally {
     // Back to whatever the environment now warrants. render() is what decides
     // the button's word, so the progress text written above is always undone.
+    busy = false;
     render();
   }
 }
+// busy is true while a request of this page's own is in flight, whether the
+// visitor pressed the button or the page did. A second one while the first is
+// out would spend another unit of the rate limit to ask for the same thing.
+let busy = false;
 // error is a failed request's message, held rather than drawn on the spot so
 // the poll does not wipe it while it is on screen. Only a new request or a
 // successful one clears it.
