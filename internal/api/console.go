@@ -206,6 +206,14 @@ const consoleHTML = `<!doctype html>
   .tabs .tick.warn { background: var(--warn); }
   .tabs .tick.err { background: var(--err); }
 
+  /* What the kind is for. Prose, so it is set as prose and given the width to
+     be read in one pass rather than a column of broken lines. */
+  .blurb {
+    margin-top: 4px; max-width: 46rem;
+    font-size: .92rem; line-height: 1.5; color: var(--muted);
+  }
+  .blurb:empty { display: none; }
+
   /* ── the kind's two states ──────────────────────────────────────────── */
   /* The cluster and the application answer different questions and are read at
      different times: is anything serving this kind at all, and is what it hands
@@ -389,6 +397,7 @@ const consoleHTML = `<!doctype html>
   <div id="status"></div>
   <div id="panel">
     <div class="tabs" id="kinds" role="tablist" aria-label="kind of lab" hidden></div>
+    <div class="blurb" id="blurb"></div>
     <div id="error"></div>
     <div id="usage"></div>
     <div class="choice" id="choice" hidden>
@@ -419,6 +428,7 @@ const consoleHTML = `<!doctype html>
 const status = document.getElementById('status');
 const panel = document.getElementById('panel');
 const build = document.getElementById('build');
+const blurbBox = document.getElementById('blurb');
 const usageBox = document.getElementById('usage');
 const tmplLabel = document.getElementById('tmpl-label');
 const choiceBox = document.getElementById('choice');
@@ -457,6 +467,8 @@ const LANGS = [
 const STRINGS = {
   en: {
     'lead': 'Get a working environment for a couple of hours.',
+    'blurb.applab': 'Upload an application and get back the URL it is running at.',
+    'blurb.sandboxlab': 'Create a sandbox from a template — a shell, a filesystem, a browser — and throw it away when its time is up.',
     'kind.aria': 'kind of lab',
     'state.ready': 'ready',
     'state.key': 'key needed',
@@ -516,6 +528,8 @@ const STRINGS = {
   },
   zh: {
     'lead': '获取一个可用的环境，有效期两小时。',
+    'blurb.applab': '上传应用源码，拿回它正在运行的地址。',
+    'blurb.sandboxlab': '从模板创建一个沙箱 —— shell、文件系统、浏览器 —— 到期即销毁。',
     'kind.aria': '实验室类型',
     'state.ready': '就绪',
     'state.key': '需要密钥',
@@ -768,6 +782,12 @@ function render() {
   });
   if (choices.some(o => o.id === keepT)) tmplSel.value = keepT;
   choiceBox.hidden = choices.length === 0;
+
+  // What this kind is for, in one line. It is the first thing under the tabs
+  // because it is what the tab is a name for: the two kinds do different things,
+  // and the state below says whether one is up without saying what it does.
+  blurbBox.textContent = kind === 'sandboxlab' ? t('blurb.sandboxlab')
+    : kind === 'applab' ? t('blurb.applab') : '';
 
   // The kind's two states, which are two different facts. The cluster is the
   // environment this service drives: is a run going, is anything serving the
