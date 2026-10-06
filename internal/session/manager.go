@@ -421,9 +421,26 @@ func (m *Manager) Status(ctx context.Context) []EnvStatus {
 	return out
 }
 
-// occupied is how many instances an environment is running, read from the
-// environment. It is an instance count, not a session count, so it needs no
-// per-kind rule: an applab app and a sandboxlab sandbox are both one instance.
+// Occupied is counted from what is in use, which no single source knows on its
+// own. The environment knows which slots are deployed; the session store knows
+// which slots a caller is holding. A lab counts if either says so, because each
+// knows something the other cannot:
+//
+//   - an applab slot a session holds but whose app is not deployed — a lab just
+//     handed out, before anything is pushed into it — is in use, and only the
+//     session record says so;
+//   - a slot the environment has deployed but this process holds no session for
+//     — as after a restart — is in use too, and only the environment says so.
+//
+// Taking the environment's list alone and treating an applab slot with nothing
+// deployed as unused makes a lab that was just handed out read as zero, which is
+// the case a caller is most likely to be looking at. sandboxlab needs no union:
+// a sandbox is only in its list while it is running, and every sandbox this
+// service makes is a running one.
+//
+// The service's own record is the fallback only when the environment cannot be
+// read at all, since then its list is empty for the wrong reason — better a
+// number from a stale record than a zero that looks like an empty cluster.
 func (m *Manager) occupied(ctx context.Context, env model.Env) int {
 	drv := m.drivers[env.Kind]
 	if drv == nil {
@@ -434,7 +451,25 @@ func (m *Manager) occupied(ctx context.Context, env model.Env) int {
 		m.log.Warn("could not list an environment's running instances", "env", env.ID, "error", err)
 		return m.recorded(env)
 	}
-	return len(live)
+	if env.Kind != model.KindApplab {
+		return len(live)
+	}
+	return len(m.occupiedSlots(env, live))
+}
+
+// occupiedSlots is the applab slots in use: those the environment has deployed,
+// plus those a session holds, as one set.
+func (m *Manager) occupiedSlots(env model.Env, live []driver.Live) map[string]bool {
+	inUse := make(map[string]bool, len(live)+len(env.Slots))
+	for _, l := range live {
+		inUse[l.ID] = true
+	}
+	for _, s := range m.liveFor(env.ID) {
+		if s.App != "" {
+			inUse[s.App] = true
+		}
+	}
+	return inUse
 }
 
 // recorded is the fallback count, from this service's own store: applab's named
@@ -459,6 +494,9 @@ type LiveLabs struct {
 // An environment that cannot be read yields an empty list rather than an error:
 // the page should show the others, and the count already falls back to the
 // service's record.
+//
+// The list is the same set the count comes from — see occupied — so the number
+// and the rows beneath it cannot disagree.
 func (m *Manager) Live(ctx context.Context) []LiveLabs {
 	out := make([]LiveLabs, 0, len(m.cfg.Envs))
 	for _, env := range m.cfg.Envs {
@@ -468,12 +506,52 @@ func (m *Manager) Live(ctx context.Context) []LiveLabs {
 			if err != nil {
 				m.log.Warn("could not list an environment's running instances", "env", env.ID, "error", err)
 			}
-			entry.Items = items
+			entry.Items = m.heldAlongside(env, items)
 		}
 		out = append(out, entry)
 	}
 	return out
 }
+
+// heldAlongside adds the applab slots a session holds but the environment did
+// not report, so the list matches the count rather than trailing it.
+//
+// A slot that was just handed out has no app deployed yet — the lab is the
+// session, and the app only becomes real when the caller pushes something into
+// it — so the environment has nothing to list for it. Without this the row would
+// appear only once that happened, which is the opposite of when it is worth
+// showing: the moment a caller has a lab is the moment they want to see it.
+//
+// The row carries the session's clock rather than the app's. Its creation time
+// is placed so that the reader's own arithmetic — created plus the deployment's
+// TTL, which is how it dates an applab lab — lands on the session's expiry.
+func (m *Manager) heldAlongside(env model.Env, items []driver.Live) []driver.Live {
+	if env.Kind != model.KindApplab {
+		return items
+	}
+	reported := make(map[string]bool, len(items))
+	for _, it := range items {
+		reported[it.ID] = true
+	}
+	for _, s := range m.liveFor(env.ID) {
+		if s.App == "" || reported[s.App] {
+			continue
+		}
+		items = append(items, driver.Live{
+			ID:        s.App,
+			State:     liveStateHeld,
+			CreatedAt: s.ExpiresAt.Add(-m.cfg.SessionTTL),
+			ExpiresAt: s.ExpiresAt,
+		})
+	}
+	return items
+}
+
+// liveStateHeld is the state of a slot a session holds with nothing deployed
+// behind it yet. It is this service's word, not the environment's — applab has
+// no state for "in use" — and it is what tells the two kinds of idle apart: a
+// slot nobody holds says "created", one that has been handed out says "held".
+const liveStateHeld = "held"
 
 // ReadyAny reports whether at least one environment is up.
 func (m *Manager) ReadyAny(ctx context.Context) bool {

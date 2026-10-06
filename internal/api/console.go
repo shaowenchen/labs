@@ -317,12 +317,15 @@ function renderEnvs(list) {
     const st = document.createElement('span'); st.className = 'tail'; st.textContent = e.ready ? 'ready' : (e.unauthorized ? 'key needed' : 'starting');
     top.append(dot, name, st, Object.assign(document.createElement('span'), { className: 'meta', textContent: e.id }));
     box.append(top);
-    // applab lends out named applications; sandboxlab hands out sandboxes, and a
-    // lab there is not an "application" — so the line names what is being
-    // counted rather than calling everything an app.
+    // applab lends out named application slots, so "3 of 8" says how much room
+    // is left. sandboxlab has no slots — a sandbox is made on demand and counted
+    // — so there the same number is only a ceiling, and the line says so rather
+    // than reading as eight reservable places with most of them free.
     if (e.capacity) {
-      const what = e.kind === 'sandboxlab' ? 'sandboxes' : 'application slots';
-      box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.occupied + ' of ' + e.capacity + ' ' + what + ' in use' }));
+      const what = e.reserves_slots
+        ? (e.occupied + ' of ' + e.capacity + ' application slots in use')
+        : (e.occupied + ' running, up to ' + e.capacity);
+      box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: what }));
     }
     if (e.console_url) {
       const u = document.createElement('div'); u.className = 'msg';

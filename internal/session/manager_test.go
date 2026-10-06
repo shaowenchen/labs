@@ -348,6 +348,105 @@ func TestStatusFallsBackToTheRecordedCount(t *testing.T) {
 	}
 }
 
+// A lab that has just been handed out counts, even though the environment has
+// nothing to report for it.
+//
+// This is the case the page was getting wrong: an applab slot becomes real only
+// when the caller pushes something into it, so a slot a session holds is not in
+// the environment's list at all. Counting that list alone made a lab read as
+// zero from the moment it was created until whatever the caller deployed
+// appeared — which is exactly when someone is looking at the page.
+func TestStatusCountsASlotASessionHoldsButNothingHasDeployed(t *testing.T) {
+	// The environment lists nothing: the slot's app is an idle record.
+	drv := &fakeDriver{ready: true}
+	m, _ := testManager(t, drv, testConfig())
+
+	got, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if got.Session.App == "" {
+		t.Fatal("Provision gave the session no slot")
+	}
+
+	status := m.Status(context.Background())
+	if len(status) != 1 || status[0].Occupied != 1 {
+		t.Fatalf("occupied = %v, want 1 for the slot the session holds", status)
+	}
+
+	live := m.Live(context.Background())
+	if len(live) != 1 || len(live[0].Items) != 1 {
+		t.Fatalf("Live = %+v, want one row for the held slot", live)
+	}
+	row := live[0].Items[0]
+	if row.ID != got.Session.App {
+		t.Errorf("row ID = %q, want the session's slot %q", row.ID, got.Session.App)
+	}
+	if row.State != "held" {
+		t.Errorf("row state = %q, want %q", row.State, "held")
+	}
+	// The reader dates an applab lab as the row's creation plus the TTL, so the
+	// two must land on the session's own expiry.
+	if row.ExpiresAt.Sub(row.CreatedAt) != 2*time.Hour {
+		t.Errorf("the row spans %s, want the session's 2h", row.ExpiresAt.Sub(row.CreatedAt))
+	}
+	if !row.ExpiresAt.Equal(got.Session.ExpiresAt) {
+		t.Errorf("row expires %s, want the session's %s", row.ExpiresAt, got.Session.ExpiresAt)
+	}
+}
+
+// A slot a session holds and the environment also reports is one slot, not two:
+// the count is a set, so a deployed lab is not double-counted once its app turns
+// up in the environment's list.
+func TestStatusCountsAHeldSlotTheEnvironmentAlsoReportsOnce(t *testing.T) {
+	drv := &fakeDriver{ready: true}
+	m, _ := testManager(t, drv, testConfig())
+
+	got, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The caller has now deployed something, so the environment reports the same
+	// slot the session holds.
+	drv.mu.Lock()
+	drv.live = []driver.Live{{ID: got.Session.App, State: "running"}}
+	drv.mu.Unlock()
+
+	status := m.Status(context.Background())
+	if len(status) != 1 || status[0].Occupied != 1 {
+		t.Fatalf("occupied = %v, want 1 (the slot counted once)", status)
+	}
+	live := m.Live(context.Background())
+	if len(live[0].Items) != 1 {
+		t.Fatalf("Live = %+v, want one row", live)
+	}
+	// The environment's own state wins over the placeholder, so the row stops
+	// saying "held" once there is something real behind it.
+	if live[0].Items[0].State != "running" {
+		t.Errorf("row state = %q, want the environment's %q", live[0].Items[0].State, "running")
+	}
+}
+
+// A lab counts once it is gone from the service's records too — being released
+// drops it from the count, so the number tracks what is actually held.
+func TestStatusDropsAReleasedSlot(t *testing.T) {
+	drv := &fakeDriver{ready: true}
+	m, _ := testManager(t, drv, testConfig())
+
+	got, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Release(context.Background(), got.Session.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	status := m.Status(context.Background())
+	if len(status) != 1 || status[0].Occupied != 0 {
+		t.Fatalf("occupied = %v, want 0 after the only lab was released", status)
+	}
+}
+
 // The run check comes before the service: an environment with no run is
 // reported as such, and its address is never probed — a probe would only return
 // a tunnel error that says less.
