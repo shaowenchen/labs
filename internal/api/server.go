@@ -195,13 +195,6 @@ func envStatusJSON(envs []session.EnvStatus) []map[string]any {
 			"ready":    e.Ready,
 			"capacity": e.Capacity,
 			"occupied": e.Occupied,
-			// Whether capacity is a set of slots a lab reserves, or only a ceiling
-			// on how many may exist at once. applab names its slots and hands one
-			// to each lab, so "3 of 8" is a real statement about how much is left.
-			// sandboxlab has no slots — a sandbox is created on demand and counted
-			// — so the same sentence there would claim eight reservable places
-			// that do not exist, and read as permanently three-quarters free.
-			"reserves_slots": e.Kind == model.KindApplab,
 		}
 		if e.ConsoleURL != "" {
 			m["console_url"] = e.ConsoleURL
