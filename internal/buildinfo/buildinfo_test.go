@@ -105,3 +105,34 @@ func TestCommitFromEnv(t *testing.T) {
 		t.Errorf("shortened = %q, want deadbee", got)
 	}
 }
+
+// SOURCE_DATE_EPOCH is a Unix timestamp and everything else here is a date, so
+// the one is converted into the other. A deploy that sets it — it is the
+// reproducible-builds convention, so a build system may well do it — would
+// otherwise put a bare integer in BuildTime, and the page renders that with
+// `new Date(...)`, which prints "Invalid Date".
+func TestSourceDateEpochIsConverted(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "1791259643")
+	if got := timeFromEnv(); got != "2026-10-06T04:07:23Z" {
+		t.Errorf("timeFromEnv() = %q, want the epoch as RFC3339", got)
+	}
+}
+
+// A value that is not a number is left alone rather than dropped: something was
+// meant by it, and showing it beats showing nothing.
+func TestSourceDateEpochThatIsNotANumberIsKept(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "whenever")
+	if got := timeFromEnv(); got != "whenever" {
+		t.Errorf("timeFromEnv() = %q, want it unchanged", got)
+	}
+}
+
+// BUILD_TIME wins over SOURCE_DATE_EPOCH: it is the caller's own value, and it
+// is already the shape the rest of this expects.
+func TestBuildTimeWinsOverSourceDateEpoch(t *testing.T) {
+	t.Setenv("BUILD_TIME", "2026-10-06T04:07:23Z")
+	t.Setenv("SOURCE_DATE_EPOCH", "1791259643")
+	if got := timeFromEnv(); got != "2026-10-06T04:07:23Z" {
+		t.Errorf("timeFromEnv() = %q, want BUILD_TIME", got)
+	}
+}

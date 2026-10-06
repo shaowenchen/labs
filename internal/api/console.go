@@ -541,11 +541,14 @@ function renderEnvs(s, e) {
   if (!e.ready && e.message) box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.message }));
   s.envBox.append(box);
 }
-// setFooter renders the build identity, when the page last heard from the
-// service, and which kinds are in play. The updated time sits right after the
-// commit, so the footer says both which build this is and how fresh what is on
-// screen is — a status page that stopped polling looks exactly like a quiet one
-// otherwise.
+// setFooter renders the build identity and which kinds are in play.
+//
+// The time is the build's, not the moment of the last poll. An "updated" line
+// was a freshness signal — this page polls every few seconds, so a stale one
+// means it has stopped — but it read as a second, unexplained clock next to the
+// commit and said nothing about the thing the footer is actually about: which
+// build is running. The build time answers that, and it is what someone
+// checking whether a deploy landed is looking for.
 //
 // The kind count is here because serving fewer kinds than expected is a silent
 // mistake: nothing errors, there is just less than there should be. Saying how
@@ -553,7 +556,8 @@ function renderEnvs(s, e) {
 function setFooter(b) {
   const parts = [];
   if (b.commit) parts.push('commit ' + b.commit);
-  parts.push('updated ' + new Date().toLocaleTimeString());
+  // Shown only when the build carried one. A build that was never told when it
+  // happened reports "unknown", and a date formatted from that is not a date.
   if (b.build_time && b.build_time !== 'unknown') parts.push('built ' + new Date(b.build_time).toLocaleString());
   if (b.kinds) parts.push('kinds ' + b.kinds.length);
   build.textContent = parts.join(' · ');

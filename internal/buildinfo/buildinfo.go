@@ -15,7 +15,9 @@ package buildinfo
 import (
 	"os"
 	"runtime/debug"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Version is the release version, or "dev" for a build that was not tagged.
@@ -105,11 +107,25 @@ func commitFromEnv() string {
 // timeFromEnv looks for a build timestamp in the variables a platform might
 // provide. Few do, so it usually returns nothing and the VCS commit time or
 // "unknown" stands.
+//
+// SOURCE_DATE_EPOCH is the odd one out: it is a Unix timestamp, not a date, and
+// it is the one of the three with a real convention behind it. It is converted
+// rather than passed through, because what leaves here is rendered as a date —
+// the page does `new Date(build_time)` — and a bare integer would print as
+// "Invalid Date" where the footer is supposed to say when the build happened.
 func timeFromEnv() string {
-	for _, name := range []string{"BUILD_TIME", "BUILD_TIMESTAMP", "SOURCE_DATE_EPOCH"} {
+	for _, name := range []string{"BUILD_TIME", "BUILD_TIMESTAMP"} {
 		if v := strings.TrimSpace(os.Getenv(name)); v != "" {
 			return v
 		}
+	}
+	if v := strings.TrimSpace(os.Getenv("SOURCE_DATE_EPOCH")); v != "" {
+		if secs, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return time.Unix(secs, 0).UTC().Format(time.RFC3339)
+		}
+		// Not a number: left as it came, rather than dropped. Something was
+		// meant by it, and showing it beats showing nothing.
+		return v
 	}
 	return ""
 }

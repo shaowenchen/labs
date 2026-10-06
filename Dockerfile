@@ -31,13 +31,35 @@ RUN go mod download
 
 COPY . .
 
+# A build that was not told when it happened records the time it happened.
+#
+# The default above cannot be a timestamp — an ARG default is evaluated before
+# the build starts, so it would be the same value for every build — and a build
+# invoked bare (`docker build .`, which is what `docker compose build` does) has
+# nothing to fill it in. Without this the binary reports "unknown", the console
+# drops the "built" line from its footer, and a deployment has no answer to
+# when it was deployed — which is the one thing the line is for.
+#
+# It runs here rather than in the RUN below so the whole string is fixed before
+# the ldflags are expanded. Only the time is guessed: the commit is a build arg
+# because .git is excluded from the context (see .dockerignore) and cannot be
+# recovered inside the image.
+RUN set -eu; \
+    if [ "${BUILD_TIME}" = "unknown" ] || [ -z "${BUILD_TIME}" ]; then \
+      BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; \
+    fi; \
+    printf '%s' "${BUILD_TIME}" > /tmp/build_time
+
 ENV CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 
+# The time is read back from the file the step above wrote rather than passed
+# down as an ARG of this stage: `RUN` does not see a variable assigned by an
+# earlier `RUN`, and re-declaring the ARG would pick up the unset default again.
 RUN go build -trimpath \
       -ldflags "-s -w \
         -X github.com/shaowenchen/labs/internal/buildinfo.Version=${VERSION} \
         -X github.com/shaowenchen/labs/internal/buildinfo.Commit=${COMMIT} \
-        -X github.com/shaowenchen/labs/internal/buildinfo.BuildTime=${BUILD_TIME}" \
+        -X github.com/shaowenchen/labs/internal/buildinfo.BuildTime=$(cat /tmp/build_time)" \
       -o /out/labs ./cmd/labs
 
 # ---------------------------------------------------------------------------
