@@ -89,14 +89,13 @@ const consoleHTML = `<!doctype html>
      a setting rather than a step. It carries no label of its own — each option
      is written in the language it selects, which is the only label that is
      readable to the person who needs it. */
-  .lang { position: absolute; top: 4px; right: 0; display: inline-flex; gap: 2px; }
+  .lang { position: absolute; top: 4px; right: 0; display: inline-flex; }
   .lang button {
     font: inherit; font-size: .78rem; font-weight: 500; line-height: 1;
     padding: 5px 9px; border: 0; border-radius: 6px;
     background: transparent; color: var(--muted); cursor: pointer;
   }
-  .lang button:hover { color: var(--fg); }
-  .lang button[aria-pressed="true"] { background: var(--line-soft); color: var(--fg); font-weight: 650; }
+  .lang button:hover { color: var(--fg); background: var(--line-soft); }
   .lang button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   h1 { font-size: 1.9rem; line-height: 1.1; letter-spacing: -.02em; margin: 0 0 8px; }
   h1 .mark {
@@ -642,19 +641,26 @@ function renderStatic() {
   tmplLabel.textContent = t('tmpl.label');
   langBox.setAttribute('aria-label', t('lang.aria'));
 }
-// renderLang draws the switch and keeps the document's own language honest, so
-// the browser hyphenates and reads the page as what it is.
+// renderLang keeps the switch's one button honest, and the document's own
+// language with it, so the browser hyphenates and reads the page as what it is.
+//
+// One button that says what it would switch to, not two that say what is on.
+// On a control the size of a masthead the pair was a segmented control with a
+// filled half, which reads as a setting that is set rather than as something to
+// press; a single button offers the other language and does that. The label is
+// the language's own word for itself, so the button is readable to whoever
+// needs it — "中文" to a Chinese reader, not "Chinese".
 function renderLang() {
   document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
   langBox.replaceChildren();
-  LANGS.forEach(l => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.textContent = l.label;
-    b.setAttribute('aria-pressed', l.code === lang ? 'true' : 'false');
-    b.onclick = () => setLang(l.code);
-    langBox.append(b);
-  });
+  const other = LANGS.find(l => l.code !== lang) || LANGS[0];
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.textContent = other.label;
+  b.title = t('lang.aria');
+  b.setAttribute('aria-label', t('lang.aria') + ': ' + other.label);
+  b.onclick = () => setLang(other.code);
+  langBox.append(b);
 }
 // The page keeps one live copy of what it last read, and redraws from it.
 // Provision changes what should be on screen before the next poll answers — a
