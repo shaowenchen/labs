@@ -170,10 +170,15 @@ function renderActions(list) {
     actions.append(b);
   });
 }
+// setFooter renders the build identity and when the page last heard from the
+// service. The updated time sits right after the commit, so the footer says
+// both which build this is and how fresh what is on screen is — a status page
+// that stopped polling looks exactly like a quiet one otherwise.
 function setFooter(b) {
   const parts = [];
   if (b.commit) parts.push('commit ' + b.commit);
-  if (b.build_time && b.build_time !== 'unknown') parts.push(new Date(b.build_time).toLocaleString());
+  parts.push('updated ' + new Date().toLocaleTimeString());
+  if (b.build_time && b.build_time !== 'unknown') parts.push('built ' + new Date(b.build_time).toLocaleString());
   build.textContent = parts.join(' · ');
 }
 // countdown is how long a lab has left, as "1h 57m" or "3m 12s". It is the
