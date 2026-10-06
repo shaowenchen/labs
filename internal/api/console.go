@@ -4,8 +4,8 @@ import (
 	"net/http"
 )
 
-// console is the landing page: one panel, with a switch for the kind of lab to
-// ask for and the count and list of what that kind is running under it. It is a
+// console is the landing page: one panel, with a tab per kind of lab to ask for
+// and the count and list of what the chosen kind is running under it. It is a
 // static document carrying nothing — everything it shows is fetched from the
 // API, which is where the limits are — so it is safe to serve to anyone.
 //
@@ -158,48 +158,43 @@ const consoleHTML = `<!doctype html>
     border-radius: var(--radius);
     box-shadow: var(--shadow);
   }
-  /* The switch on the left, what makes a lab on the right. The two sides are
-     laid out independently because they are: the switch grows a row per kind
-     the deployment serves, and the action column is the same whatever is
-     selected. */
-  .head {
-    display: flex; align-items: flex-start; justify-content: space-between;
-    gap: 16px; flex-wrap: wrap;
+  /* ── the kind tabs ──────────────────────────────────────────────────── */
+  /* One tab per kind the deployment serves. A tab strip rather than a
+     dropdown because there are only ever a handful of kinds and each one has a
+     state worth showing: a select hides every kind but the chosen one behind a
+     click, and the kind you are not reading is exactly the one whose state you
+     want. The active tab is the same surface as the panel below it and shares
+     its top edge, so the two read as one card rather than two. */
+  .tabs {
+    display: flex; align-items: flex-end; gap: 2px; flex-wrap: wrap;
+    margin: -16px -20px 16px; padding: 12px 20px 0;
+    border-bottom: 1px solid var(--line);
   }
-  /* ── the kind switch ────────────────────────────────────────────────── */
-  /* A vertical pair of segments rather than a dropdown. A select hides every
-     kind but the chosen one behind a click and has nowhere to put a state: the
-     kind you are not reading is exactly the one whose state you want, and with
-     two of them there is no reason not to show both at once. */
-  .switch {
-    display: inline-flex; flex-direction: column; gap: 2px; flex: none;
-    padding: 3px; border: 1px solid var(--line); border-radius: var(--radius-sm);
-    background: var(--line-soft);
-  }
-  .switch[hidden] { display: none; }
-  .switch button {
+  .tabs[hidden] { display: none; }
+  .tabs button {
     font: inherit; font-size: .87rem; font-weight: 550; line-height: 1.3;
-    display: flex; align-items: center; gap: 8px;
-    padding: 6px 14px 6px 10px; border: 0; border-radius: 6px;
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 14px; border: 1px solid transparent; border-bottom: 0;
+    border-radius: var(--radius-sm) var(--radius-sm) 0 0;
     background: transparent; color: var(--muted); cursor: pointer;
-    white-space: nowrap; text-align: left;
+    white-space: nowrap; margin-bottom: -1px;
   }
-  .switch button:hover { color: var(--fg); }
-  .switch button[aria-checked="true"] {
+  .tabs button:hover { color: var(--fg); }
+  /* The active tab is drawn as the panel continuing upward: same background,
+     same border, its own bottom edge removed into the panel's top border. */
+  .tabs button[aria-selected="true"] {
     background: var(--surface); color: var(--fg);
-    box-shadow: 0 1px 2px rgba(20,20,30,.06);
+    border-color: var(--line); border-bottom: 1px solid var(--surface);
   }
-  .switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .switch .tick { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--muted); }
-  .switch .tick.ok { background: var(--ok); }
-  .switch .tick.warn { background: var(--warn); }
-  .switch .tick.err { background: var(--err); }
+  .tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .tabs .tick { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--muted); }
+  .tabs .tick.ok { background: var(--ok); }
+  .tabs .tick.warn { background: var(--warn); }
+  .tabs .tick.err { background: var(--err); }
 
-  /* The state, the template and the button, stacked on the right and read top
-     to bottom in the order they are used. */
   .actions {
-    display: flex; flex-direction: column; align-items: flex-end; gap: 10px;
-    margin-left: auto;
+    display: flex; align-items: center; justify-content: flex-end;
+    gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
   }
   .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
   /* The template picker and the button are one row of things used in sequence,
@@ -337,14 +332,12 @@ const consoleHTML = `<!doctype html>
   </header>
   <div id="status"></div>
   <div id="panel">
-    <div class="head">
-      <div class="switch" id="kinds" role="radiogroup" aria-label="kind of lab" hidden></div>
-      <div class="actions">
-        <span class="state" id="state"></span>
-        <div class="controls">
-          <select id="template" aria-label="template" hidden></select>
-          <button id="create">Create a lab</button>
-        </div>
+    <div class="tabs" id="kinds" role="tablist" aria-label="kind of lab" hidden></div>
+    <div class="actions">
+      <span class="state" id="state"></span>
+      <div class="controls">
+        <select id="template" aria-label="template" hidden></select>
+        <button id="create">Create a lab</button>
       </div>
     </div>
     <div id="error"></div>
@@ -371,7 +364,7 @@ const status = document.getElementById('status');
 const panel = document.getElementById('panel');
 const build = document.getElementById('build');
 const stateEl = document.getElementById('state');
-const kindsBox = document.getElementById('kinds');
+const tabsBox = document.getElementById('kinds');
 const tmplSel = document.getElementById('template');
 const createBtn = document.getElementById('create');
 const errBox = document.getElementById('error');
@@ -390,14 +383,14 @@ const kmError = document.getElementById('km-error');
 // create that was refused can start an environment — so the redraws are driven
 // by this rather than by the poll alone.
 let cfg = {};
-// kind is the kind being read. It is state rather than a read of the switch,
-// because the switch is redrawn on every poll: the rows are updated in place
+// kind is the kind being read. It is state rather than a read of the tabs,
+// because the tabs are redrawn on every poll: the rows are updated in place
 // rather than rebuilt — rebuilding would replace a button under the pointer —
 // so there is no element whose value is the answer.
 let kind = '';
-// switchRows holds one live row per kind, so the switch is updated rather than
+// tabRows holds one live tab per kind, so the strip is updated rather than
 // rebuilt on every poll. Keyed by kind, in the order the kinds are first seen.
-const switchRows = new Map();
+const tabRows = new Map();
 // rememberedKind is the kind the last visit was left on, so a reload comes back
 // to it. It is a read of browser storage, which may be unavailable — a private
 // window, or cleared data — so it may simply find nothing.
@@ -430,48 +423,46 @@ function problems(list) {
   box.append(hint);
   return box;
 }
-// renderSwitch draws the kind switch: one segment per kind the deployment
-// serves, the kind being read marked as checked.
+// renderTabs draws the kind tabs: one per kind the deployment serves, the kind
+// being read marked as selected.
 //
-// The rows are grown once and then updated, never rebuilt. The poll runs every
+// The tabs are grown once and then updated, never rebuilt. The poll runs every
 // five seconds and this is a row of buttons: replacing one between a pointer
 // going down and coming up swallows the click, and the row a person navigates
-// with is the last place that should happen. So a row is created when its kind
+// with is the last place that should happen. So a tab is created when its kind
 // first appears and removed when it goes away — which a deployment reconfigured
 // under us can do — and otherwise only its label and state are rewritten.
 //
-// Each segment carries the kind's own state as a dot. That is the thing a
-// dropdown cannot show: the kind you are not reading is exactly the one whose
-// state you want, and with a handful of kinds there is no reason to hide it
-// behind a click.
-function renderSwitch(served) {
+// Each tab carries the kind's own state as a dot, so the strip answers "is the
+// other one up" without being clicked. That is the thing a dropdown cannot show.
+function renderTabs(served) {
   const want = new Set(served.map(e => e.kind));
-  for (const [k, row] of switchRows) {
-    if (!want.has(k)) { row.remove(); switchRows.delete(k); }
+  for (const [k, row] of tabRows) {
+    if (!want.has(k)) { row.btn.remove(); tabRows.delete(k); }
   }
   served.forEach(e => {
-    let row = switchRows.get(e.kind);
+    let row = tabRows.get(e.kind);
     if (!row) {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.setAttribute('role', 'radio');
+      btn.setAttribute('role', 'tab');
       btn.dataset.kind = e.kind;
       const tick = document.createElement('span'); tick.className = 'tick';
       const name = document.createElement('span'); name.textContent = e.kind;
       btn.append(tick, name);
       btn.onclick = () => selectKind(e.kind);
-      kindsBox.append(btn);
+      tabsBox.append(btn);
       row = { btn, tick };
-      switchRows.set(e.kind, row);
+      tabRows.set(e.kind, row);
     }
-    row.btn.setAttribute('aria-checked', e.kind === kind ? 'true' : 'false');
+    row.btn.setAttribute('aria-selected', e.kind === kind ? 'true' : 'false');
     const state = e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn');
     row.tick.className = 'tick ' + state;
     row.btn.title = e.ready ? e.kind + ': ready' : (e.unauthorized ? e.kind + ': key needed' : e.kind + ': starting');
   });
-  kindsBox.hidden = served.length === 0;
+  tabsBox.hidden = served.length === 0;
 }
-// selectKind is the switch: it changes what the panel is about, remembers the
+// selectKind is the tab: it changes what the panel is about, remembers the
 // choice so a reload comes back to it, and drops any refusal that was on screen
 // — an error is an answer to the kind that was showing, not to the one just
 // chosen.
@@ -485,11 +476,10 @@ function selectKind(k) {
 // render draws the whole page from one reading of /config.
 //
 // There is one panel and one kind on screen at a time, so this is a redraw of
-// that panel rather than a reconciliation of several: the kind switch decides
-// what the rest of it is about, and everything below the head belongs to the
-// kind it names. The switch itself is updated in place rather than rebuilt —
-// the poll runs every five seconds, and a button replaced under a click cannot
-// be clicked.
+// that panel rather than a reconciliation of several: the tabs decide what the
+// rest of it is about, and everything below them belongs to the kind they name.
+// The tabs themselves are updated in place rather than rebuilt — the poll runs
+// every five seconds, and a button replaced under a click cannot be clicked.
 function render() {
   const list = cfg.configured === false ? [] : (cfg.environments || []);
   const labs = cfg.labs || [];
@@ -505,7 +495,7 @@ function render() {
     const pick = served.find(e => e.kind === remembered) || served[0];
     kind = pick ? pick.kind : '';
   }
-  renderSwitch(served);
+  renderTabs(served);
 
   // The template picker is shown for exactly the kinds that offer a choice, and
   // is filled from that kind's list each time — so it can never be stale, and
@@ -806,8 +796,8 @@ function keyRow(key) {
   v.append(code, copy);
   return r;
 }
-// The button is the one action on the page; the kind switch that changes what
-// the page is about is wired per row in renderSwitch.
+// The button is the one action on the page; the tabs that change what the page
+// is about are wired per tab in renderTabs.
 createBtn.onclick = create;
 loadStatus();
 // Poll, so an environment that is booting becomes a lab without a reload. The
