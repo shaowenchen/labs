@@ -83,7 +83,21 @@ const consoleHTML = `<!doctype html>
   }
   main { max-width: 720px; margin: 0 auto; padding: 64px 20px 80px; }
 
-  header { margin-bottom: 36px; }
+  header { position: relative; margin-bottom: 36px; }
+  /* The language switch sits in the corner of the header, out of the reading
+     order: the page is about one thing, and which language it is written in is
+     a setting rather than a step. It carries no label of its own — each option
+     is written in the language it selects, which is the only label that is
+     readable to the person who needs it. */
+  .lang { position: absolute; top: 4px; right: 0; display: inline-flex; gap: 2px; }
+  .lang button {
+    font: inherit; font-size: .78rem; font-weight: 500; line-height: 1;
+    padding: 5px 9px; border: 0; border-radius: 6px;
+    background: transparent; color: var(--muted); cursor: pointer;
+  }
+  .lang button:hover { color: var(--fg); }
+  .lang button[aria-pressed="true"] { background: var(--line-soft); color: var(--fg); font-weight: 650; }
+  .lang button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   h1 { font-size: 1.9rem; line-height: 1.1; letter-spacing: -.02em; margin: 0 0 8px; }
   h1 .mark {
     display: inline-block; width: 10px; height: 10px; border-radius: 3px;
@@ -232,21 +246,36 @@ const consoleHTML = `<!doctype html>
   .state.warn { color: var(--warn); }
   .state.err { color: var(--err); }
 
-  /* What the environment is carrying, then the labs in it — one list, with no
-     heading over either half. The count and the rows below it are the same fact
-     read from the same source; heading them separately only made the reader
-     work out how the two related. */
+  /* What the environment is carrying, then the labs in it — the count is the
+     table's own summary line, so it sits against it with no heading between. */
   .usage { margin-top: 14px; font-size: .87rem; color: var(--muted); }
-  .labs { margin-top: 16px; }
-  .lab { padding: 11px 0; border-top: 1px solid var(--line-soft); }
-  .lab:first-child { padding-top: 0; border-top: 0; }
-  .lab .line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
-  .lab .id { font: 600 .88rem/1.5 var(--mono); overflow-wrap: anywhere; }
+  /* ── what the kind is running ───────────────────────────────────────── */
+  /* A table, because these are records with the same fields in each. The
+     headings say what a column is once; the rows only carry the values. The id
+     and the state are set in the fixed-width face the rest of the page uses for
+     things that are data rather than prose — and because both are passed through
+     from the environment unchanged, including when the page is in Chinese. */
+  .labs { margin-top: 10px; }
+  .labs-table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+  .labs-table th {
+    text-align: left; font-weight: 600; font-size: .74rem;
+    letter-spacing: .05em; text-transform: uppercase; color: var(--muted);
+    padding: 0 12px 7px 0; border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .labs-table td {
+    padding: 9px 12px 9px 0; border-bottom: 1px solid var(--line-soft);
+    vertical-align: baseline;
+  }
+  .labs-table tr:last-child td { border-bottom: 0; }
+  .labs-table th:last-child, .labs-table td:last-child { padding-right: 0; }
+  .labs-table .id { font: 600 .86rem/1.5 var(--mono); overflow-wrap: anywhere; }
   /* The instance's own state, undecorated: it is the environment's word, not a
      second opinion on whether the lab is any good, and the accent here would
      have been the third thing on the line competing for the eye. */
-  .lab .st { font-size: .82rem; color: var(--muted); }
-  .lab .meta { color: var(--muted); font-size: .85rem; }
+  .labs-table .st { font: .82rem/1.5 var(--mono); color: var(--muted); }
+  .labs-table .meta { color: var(--muted); white-space: nowrap; }
+  .empty { color: var(--muted); font-size: .87rem; margin: 4px 0 0; }
   /* Why an environment is not up, in the environment's own words. It is the one
      thing the state word cannot say, so it is the only prose in the panel. */
   .reason {
@@ -329,13 +358,22 @@ const consoleHTML = `<!doctype html>
     .row { grid-template-columns: 1fr; gap: 2px; }
     .row .k { font-size: .78rem; }
   }
+  /* The table is four columns of mostly fixed-width text, which at a phone's
+     width does not fit without being allowed to break. The times are the two
+     that can wrap and still be read; the id already breaks anywhere. */
+  @media (max-width: 560px) {
+    .labs-table { font-size: .79rem; }
+    .labs-table th, .labs-table td { padding-right: 8px; }
+    .labs-table .meta { white-space: normal; }
+  }
 </style>
 </head>
 <body>
 <main>
   <header>
+    <div class="lang" id="lang" role="group" aria-label="language"></div>
     <h1><span class="mark"></span>labs</h1>
-    <p class="lead">Get a working environment for a couple of hours.</p>
+    <p class="lead" id="lead">Get a working environment for a couple of hours.</p>
   </header>
   <div id="status"></div>
   <div id="panel">
@@ -385,6 +423,198 @@ const kmConfirm = document.getElementById('km-confirm');
 const kmClose = document.getElementById('km-close');
 const kmEyebrow = document.getElementById('km-eyebrow');
 const kmError = document.getElementById('km-error');
+const leadEl = document.getElementById('lead');
+const langBox = document.getElementById('lang');
+
+// ── language ────────────────────────────────────────────────────────────────
+// The page is read by people who arrive from a link with no context and no
+// account, so it is written in the two languages its audience is. There is no
+// build step and no translation file to load: both languages live here as one
+// table, and every string the page draws goes through t().
+//
+// What is translated is the page's own prose. What an environment calls its own
+// state ("running", "created") and an environment's own error message are passed
+// through as they came — they are the environment's words, and a translation
+// here would be this page's guess at what they mean. The clocks are formatted in
+// the chosen language's conventions rather than left to the browser's, so the
+// page does not read half in one language and half in another.
+const LANGS = [
+  { code: 'en', label: 'English', locale: 'en-US' },
+  { code: 'zh', label: '中文', locale: 'zh-CN' },
+];
+const STRINGS = {
+  en: {
+    'lead': 'Get a working environment for a couple of hours.',
+    'kind.aria': 'kind of lab',
+    'template.aria': 'template',
+    'state.ready': 'ready',
+    'state.key': 'key needed',
+    'state.starting': 'starting',
+    'usage.sandboxes': 'sandboxes: {n} of {cap} in use',
+    'usage.slots': 'application slots: {n} of {cap} in use',
+    'create': 'Create a lab',
+    'start': 'Start a lab',
+    'creating': 'Creating…',
+    'col.id': 'id', 'col.state': 'state', 'col.created': 'created', 'col.expires': 'expires',
+    'empty': 'Nothing running yet.',
+    'lang.aria': 'language',
+    'expires.in': 'expires in {d}',
+    'created.at': 'created {d}',
+    'ago.just': 'just now',
+    'ago.hm': '{h}h {m}m ago',
+    'ago.m': '{m}m ago',
+    'left': '{d} left · until {at}',
+    'dur.expired': 'expired',
+    'dur.hm': '{h}h {m}m',
+    'dur.ms': '{m}m {s}s',
+    'dur.s': '{s}s',
+    'footer.commit': 'commit {c}',
+    'footer.built': 'built {d}',
+    'footer.kinds': 'kinds {n}',
+    'err.retryable': '(retryable)',
+    'err.reach': 'could not reach the service: {m}',
+    'row.error': 'error',
+    'row.status': 'status',
+    'row.console': 'console',
+    'row.key': 'api key',
+    'row.expires': 'expires',
+    'row.app': 'app',
+    'row.template': 'template',
+    'row.how': 'how',
+    'how.sandbox': 'Open the link — the key is already in it.',
+    'how.other': 'Open the console and paste the key.',
+    'once': 'This key is shown once, now. It is not shown again — copy it before closing.',
+    'ready': 'Ready',
+    'modaltitle': 'Your {kind} lab is ready',
+    'close': 'Close',
+    'open': 'Open the lab',
+    'copy': 'Copy',
+    'copied': 'Copied',
+    'select': 'Select it',
+    'none': '(none)',
+    'unconfigured': 'This deployment is not configured yet',
+    'redeploy': 'Set these and redeploy. ',
+    'fullstate': ' shows the full state.',
+    'tabtitle.ready': '{kind}: ready',
+    'tabtitle.key': '{kind}: key needed',
+    'tabtitle.starting': '{kind}: starting',
+  },
+  zh: {
+    'lead': '获取一个可用的环境，有效期两小时。',
+    'kind.aria': '实验室类型',
+    'template.aria': '模板',
+    'state.ready': '就绪',
+    'state.key': '需要密钥',
+    'state.starting': '启动中',
+    'usage.sandboxes': '沙箱：{cap} 个中占用 {n} 个',
+    'usage.slots': '应用槽位：{cap} 个中占用 {n} 个',
+    'create': '创建实验室',
+    'start': '启动实验室',
+    'creating': '创建中…',
+    'col.id': 'ID', 'col.state': '状态', 'col.created': '创建于', 'col.expires': '到期',
+    'empty': '暂无运行中的实例。',
+    'lang.aria': '语言',
+    'expires.in': '{d}后到期',
+    'created.at': '{d}创建',
+    'ago.just': '刚刚',
+    'ago.hm': '{h}小时{m}分钟前',
+    'ago.m': '{m}分钟前',
+    'left': '还剩 {d} · 到期时间 {at}',
+    'dur.expired': '已过期',
+    'dur.hm': '{h}小时{m}分',
+    'dur.ms': '{m}分{s}秒',
+    'dur.s': '{s}秒',
+    'footer.commit': '提交 {c}',
+    'footer.built': '构建于 {d}',
+    'footer.kinds': '类型 {n}',
+    'err.retryable': '（可重试）',
+    'err.reach': '无法连接到服务：{m}',
+    'row.error': '错误',
+    'row.status': '状态',
+    'row.console': '控制台',
+    'row.key': 'API 密钥',
+    'row.expires': '到期',
+    'row.app': '应用',
+    'row.template': '模板',
+    'row.how': '使用方式',
+    'how.sandbox': '打开链接即可 —— 密钥已包含在链接里。',
+    'how.other': '打开控制台并粘贴密钥。',
+    'once': '密钥只在此处显示一次，关闭后不再显示 —— 请先复制。',
+    'ready': '已就绪',
+    'modaltitle': '你的 {kind} 实验室已就绪',
+    'close': '关闭',
+    'open': '打开实验室',
+    'copy': '复制',
+    'copied': '已复制',
+    'select': '手动选择',
+    'none': '（无）',
+    'unconfigured': '此部署尚未配置完成',
+    'redeploy': '设置以下变量后重新部署。',
+    'fullstate': ' 可查看完整状态。',
+    'tabtitle.ready': '{kind}：就绪',
+    'tabtitle.key': '{kind}：需要密钥',
+    'tabtitle.starting': '{kind}：启动中',
+  },
+};
+function bestLocale() {
+  const list = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language];
+  const tags = (list || []).map(l => String(l).toLowerCase());
+  if (tags.some(t => t.indexOf('zh') === 0)) return 'zh';
+  if (tags.some(t => t.indexOf('en') === 0)) return 'en';
+  return 'en';
+}
+// storedLang is what the reader chose last time. It is a read of browser
+// storage, which may be unavailable — a private window, or cleared data — so it
+// may simply find nothing, and the browser's own preference stands.
+let lang = (function () {
+  try { return localStorage.getItem('labs.lang') || ''; } catch (e) { return ''; }
+})();
+if (!STRINGS[lang]) lang = bestLocale();
+function locale() { return (LANGS.find(l => l.code === lang) || LANGS[0]).locale; }
+// t looks a string up and fills its {placeholders}. A missing string returns its
+// key: the page then shows a name it has for the thing rather than nothing, which
+// is the difference between a bug you can read and a gap you cannot.
+function t(key, vars) {
+  const table = STRINGS[lang] || STRINGS.en;
+  let s = (key in table) ? table[key] : (key in STRINGS.en ? STRINGS.en[key] : key);
+  if (vars) for (const k in vars) s = s.split('{' + k + '}').join(String(vars[k]));
+  return s;
+}
+function setLang(code) {
+  if (!STRINGS[code] || code === lang) return;
+  lang = code;
+  try { localStorage.setItem('labs.lang', code); } catch (e) {}
+  renderStatic();
+  renderLang();
+  setFooter(cfg);   // the build line is prose too, and the date is formatted to the language
+  render();
+  if (km.open) renderModalText();
+}
+// renderStatic writes the words that belong to the page rather than to any data:
+// the lead, and the accessible names of the three controls that carry one. They
+// are set rather than baked into the markup so switching the language reaches
+// them as well — an aria-label is read aloud, so leaving it in the other
+// language is the same mistake as leaving the prose.
+function renderStatic() {
+  leadEl.textContent = t('lead');
+  tabsBox.setAttribute('aria-label', t('kind.aria'));
+  tmplSel.setAttribute('aria-label', t('template.aria'));
+  langBox.setAttribute('aria-label', t('lang.aria'));
+}
+// renderLang draws the switch and keeps the document's own language honest, so
+// the browser hyphenates and reads the page as what it is.
+function renderLang() {
+  document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
+  langBox.replaceChildren();
+  LANGS.forEach(l => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = l.label;
+    b.setAttribute('aria-pressed', l.code === lang ? 'true' : 'false');
+    b.onclick = () => setLang(l.code);
+    langBox.append(b);
+  });
+}
 // The page keeps one live copy of what it last read, and redraws from it.
 // Provision changes what should be on screen before the next poll answers — a
 // create that was refused can start an environment — so the redraws are driven
@@ -419,14 +649,14 @@ function row(k, v, cls) {
 // that says "not configured" is followed by the actual missing variables.
 function problems(list) {
   const box = document.createElement('div'); box.className = 'banner';
-  const h = document.createElement('h2'); h.textContent = 'This deployment is not configured yet'; box.append(h);
+  const h = document.createElement('h2'); h.textContent = t('unconfigured'); box.append(h);
   const ul = document.createElement('ul');
   (list || []).forEach(p => { const li = document.createElement('li'); li.textContent = p; ul.append(li); });
   box.append(ul);
   const hint = document.createElement('p'); hint.className = 'lead'; hint.style.margin = '.75rem 0 0';
-  hint.textContent = 'Set these and redeploy. ';
+  hint.textContent = t('redeploy');
   const a = document.createElement('a'); a.href = 'api/v1/config'; a.textContent = 'GET /api/v1/config';
-  hint.append(a, document.createTextNode(' shows the full state.'));
+  hint.append(a, document.createTextNode(t('fullstate')));
   box.append(hint);
   return box;
 }
@@ -465,7 +695,8 @@ function renderTabs(served) {
     row.btn.setAttribute('aria-selected', e.kind === kind ? 'true' : 'false');
     const state = e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn');
     row.tick.className = 'tick ' + state;
-    row.btn.title = e.ready ? e.kind + ': ready' : (e.unauthorized ? e.kind + ': key needed' : e.kind + ': starting');
+    row.btn.title = e.ready ? t('tabtitle.ready', { kind: e.kind })
+      : (e.unauthorized ? t('tabtitle.key', { kind: e.kind }) : t('tabtitle.starting', { kind: e.kind }));
   });
   tabsBox.hidden = served.length === 0;
 }
@@ -527,51 +758,81 @@ function render() {
   // whether to press the button. The reason line is the honest answer there.
   const env = list.find(e => e.kind === kind);
   const up = !!(env && env.ready);
-  stateEl.textContent = !env ? '' : (env.ready ? 'ready' : (env.unauthorized ? 'key needed' : 'starting'));
+  stateEl.textContent = !env ? '' : (env.ready ? t('state.ready') : (env.unauthorized ? t('state.key') : t('state.starting')));
   stateEl.className = 'state ' + (up ? 'ok' : (env && env.unauthorized ? 'err' : 'warn'));
   stateEl.hidden = !env;
   const capacity = env && env.capacity;
   usageBox.textContent = (up && capacity)
     ? (kind === 'sandboxlab'
-      ? ('sandboxes: ' + env.occupied + ' of ' + capacity + ' in use')
-      : ('application slots: ' + env.occupied + ' of ' + capacity + ' in use'))
+      ? t('usage.sandboxes', { n: env.occupied, cap: capacity })
+      : t('usage.slots', { n: env.occupied, cap: capacity }))
     : '';
   reasonBox.textContent = (env && !env.ready && env.message) ? env.message : '';
   // The button's word follows the environment, not the request: a kind that is
   // up hands out a lab, and one that is not is what the press starts. It is
   // never hidden — a kind with nothing running still needs a way to ask, since
   // asking is what starts it.
-  createBtn.textContent = up ? 'Create a lab' : 'Start a lab';
+  createBtn.textContent = up ? t('create') : t('start');
   createBtn.disabled = !kind;
 
-  // What the kind is running. One row per lab, in the environment's own words
-  // for its state — applab's "created" is an app record with nothing deployed
-  // behind it, and any friendlier word would be this page's guess at what that
-  // implies. The list is below the count because it is the same data the count
-  // is: a number and the things it counts.
-  labsBox.replaceChildren();
-  const mine = labs.filter(l => l.kind === kind);
-  mine.forEach(l => (l.labs || []).forEach(it => {
-    const box = document.createElement('div'); box.className = 'lab';
-    const line = document.createElement('div'); line.className = 'line';
-    line.append(Object.assign(document.createElement('span'), { className: 'id', textContent: it.id }));
-    if (it.state) {
-      line.append(Object.assign(document.createElement('span'), {
-        className: 'st', textContent: String(it.state).toLowerCase() }));
-    }
-    const left = document.createElement('span'); left.className = 'meta'; left.dataset.expires = expiresOf(it);
-    const at = document.createElement('span'); at.className = 'meta'; at.dataset.created = it.created_at || '';
-    line.append(left, at);
-    if (it.template) line.append(Object.assign(document.createElement('span'), { className: 'meta', textContent: 'template ' + it.template }));
-    box.append(line);
-    labsBox.append(box);
-  }));
-  tick();
+  renderLabs(labs.filter(l => l.kind === kind));
 
   // A panel is drawn only once there is a kind to put in it; otherwise an
   // unconfigured deployment shows an empty outline.
   panel.classList.toggle('has', !!kind);
   renderError();
+}
+// renderLabs draws what the kind is running as a table, one row per instance.
+//
+// A table rather than the rows this used to draw, because these are records with
+// the same fields in each: the column headings then say what each value is once
+// rather than on every row. The state is passed through in the environment's own
+// word — applab's "created" is an app record with nothing deployed behind it, and
+// a friendlier word would be this page's guess at what that implies — so the
+// state column is not translated and is set in a fixed-width face to say so.
+//
+// The times are the two columns that differ per row: when the instance was made,
+// and when it ends. Both are drawn from the row's own data attributes by tick(),
+// which is what makes them count down without the table being rebuilt.
+function renderLabs(mine) {
+  labsBox.replaceChildren();
+  const items = [];
+  (mine || []).forEach(l => (l.labs || []).forEach(it => items.push(it)));
+  if (!items.length) {
+    const p = document.createElement('p'); p.className = 'empty'; p.textContent = t('empty');
+    labsBox.append(p);
+    return;
+  }
+  const headings = [
+    [t('col.id'), 'id'],
+    [t('col.state'), 'st'],
+    [t('col.created'), 'meta'],
+    [t('col.expires'), 'meta'],
+  ];
+  const table = document.createElement('table'); table.className = 'labs-table';
+  const head = document.createElement('thead');
+  const hrow = document.createElement('tr');
+  headings.forEach(([label, cls]) => {
+    const th = document.createElement('th');
+    th.className = cls; th.textContent = label;
+    hrow.append(th);
+  });
+  head.append(hrow);
+  const body = document.createElement('tbody');
+  items.forEach(it => {
+    const tr = document.createElement('tr');
+    tr.append(Object.assign(document.createElement('td'), { className: 'id', textContent: it.id }));
+    // A state the environment did not name is a blank cell rather than an empty
+    // label: there is nothing to say, and the column is already headed.
+    tr.append(Object.assign(document.createElement('td'), { className: 'st', textContent: it.state ? String(it.state).toLowerCase() : '' }));
+    const created = document.createElement('td'); created.className = 'meta'; created.dataset.created = it.created_at || '';
+    const expires = document.createElement('td'); expires.className = 'meta'; expires.dataset.expires = expiresOf(it);
+    tr.append(created, expires);
+    body.append(tr);
+  });
+  table.append(head, body);
+  labsBox.append(table);
+  tick();
 }
 // setFooter renders the build identity and which kinds are in play.
 //
@@ -587,11 +848,11 @@ function render() {
 // many kinds are configured turns "where is sandboxlab" into an answer.
 function setFooter(b) {
   const parts = [];
-  if (b.commit) parts.push('commit ' + b.commit);
+  if (b.commit) parts.push(t('footer.commit', { c: b.commit }));
   // Shown only when the build carried one. A build that was never told when it
   // happened reports "unknown", and a date formatted from that is not a date.
-  if (b.build_time && b.build_time !== 'unknown') parts.push('built ' + new Date(b.build_time).toLocaleString());
-  if (b.kinds) parts.push('kinds ' + b.kinds.length);
+  if (b.build_time && b.build_time !== 'unknown') parts.push(t('footer.built', { d: new Date(b.build_time).toLocaleString(locale()) }));
+  if (b.kinds) parts.push(t('footer.kinds', { n: b.kinds.length }));
   build.textContent = parts.join(' · ');
 }
 // countdown is how long a lab has left, as "1h 57m" or "3m 12s". It is the
@@ -599,20 +860,20 @@ function setFooter(b) {
 // the reader has to subtract from.
 function countdown(expiresAt) {
   let s = Math.floor((new Date(expiresAt).getTime() - Date.now()) / 1000);
-  if (s <= 0) return 'expired';
+  if (s <= 0) return t('dur.expired');
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
   s = s % 60;
-  if (h) return h + 'h ' + String(m).padStart(2, '0') + 'm';
-  if (m) return m + 'm ' + String(s).padStart(2, '0') + 's';
-  return s + 's';
+  if (h) return t('dur.hm', { h: h, m: String(m).padStart(2, '0') });
+  if (m) return t('dur.ms', { m: m, s: String(s).padStart(2, '0') });
+  return t('dur.s', { s: s });
 }
 // sinceFmt is how long ago a lab was created, as "12m ago".
 function sinceFmt(createdAt) {
   let s = Math.floor((Date.now() - new Date(createdAt).getTime()) / 1000);
-  if (s < 60) return 'just now';
+  if (s < 60) return t('ago.just');
   const m = Math.floor(s / 60), h = Math.floor(m / 60);
-  if (h) return h + 'h ' + (m % 60) + 'm ago';
-  return m + 'm ago';
+  if (h) return t('ago.hm', { h: h, m: m % 60 });
+  return t('ago.m', { m: m });
 }
 let sessionTTL = 0; // seconds; from /config, for kinds that report no expiry
 // expiresOf is when a running instance ends. A sandboxlab sandbox reports its
@@ -628,15 +889,15 @@ function expiresOf(it) {
 // re-rendering, so the lists do not flicker under the pointer.
 function tick() {
   document.querySelectorAll('#panel [data-expires]').forEach(e => {
-    e.textContent = e.dataset.expires ? 'expires in ' + countdown(e.dataset.expires) : '';
+    e.textContent = e.dataset.expires ? t('expires.in', { d: countdown(e.dataset.expires) }) : '';
   });
   document.querySelectorAll('#panel [data-created]').forEach(e => {
-    e.textContent = e.dataset.created ? 'created ' + sinceFmt(e.dataset.created) : '';
+    e.textContent = e.dataset.created ? t('created.at', { d: sinceFmt(e.dataset.created) }) : '';
   });
   // The dialog's own countdown, so the hand-off keeps ticking while it is open.
   document.querySelectorAll('#km-body [data-expires]').forEach(e => {
     e.textContent = e.dataset.expires
-      ? countdown(e.dataset.expires) + ' left · until ' + new Date(e.dataset.expires).toLocaleTimeString()
+      ? t('left', { d: countdown(e.dataset.expires), at: new Date(e.dataset.expires).toLocaleTimeString(locale()) })
       : '';
   });
 }
@@ -674,7 +935,7 @@ async function loadStatus() {
     // Say so rather than showing nothing, which is what a silent failure looks
     // like: the cluster status simply never appears. What was last read stays
     // on the page, since it is still the most recent thing known.
-    status.replaceChildren(row('status', 'could not reach the service: ' + e.message, 'err'));
+    status.replaceChildren(row(t('row.status'), t('err.reach', { m: e.message }), 'err'));
     render();
   }
 }
@@ -691,7 +952,7 @@ async function create() {
   const template = tmplSel.hidden ? '' : tmplSel.value;
   error = '';
   createBtn.disabled = true;
-  createBtn.textContent = 'Creating…';
+  createBtn.textContent = t('creating');
   renderError();
   const req = { kind: kind };
   if (template) req.template = template;
@@ -706,7 +967,7 @@ async function create() {
     showLab(body.data, kind);
     loadStatus(); // the new lab appears in the running list on the next poll
   } catch (e) {
-    error = 'could not reach the service: ' + e.message;
+    error = t('err.reach', { m: e.message });
     renderError();
   } finally {
     // Back to whatever the environment now warrants. render() is what decides
@@ -732,8 +993,8 @@ function showError(body, code) {
 function renderError() {
   errBox.replaceChildren();
   if (!error) return;
-  const d = row('error', error, 'err');
-  if (retryable) d.append(Object.assign(document.createElement('span'), { textContent: ' (retryable)' }));
+  const d = row(t('row.error'), error, 'err');
+  if (retryable) d.append(Object.assign(document.createElement('span'), { textContent: ' ' + t('err.retryable') }));
   errBox.append(d);
   if (problems_) errBox.append(problems(problems_));
 }
@@ -757,19 +1018,29 @@ function closeModal() {
 // chance to take it, and offers a copy button rather than a string to select by
 // hand.
 function showLab(d, kind) {
-  kmEyebrow.textContent = 'Ready';
-  kmTitle.textContent = 'Your ' + kind + ' lab is ready';
+  shownLab = Object.assign({ kind: kind }, d);
+  renderModalText(shownLab);
+  openModal();
+  tick();
+}
+// renderModalText draws the dialog's words from the lab it is handing over, and
+// is called again when the language changes while it is open — the modal is a
+// dialog over the page, and switching the page under it should not leave it in
+// the other language.
+function renderModalText(d) {
+  d = d || shownLab;
+  if (!d) return;
+  kmEyebrow.textContent = t('ready');
+  kmTitle.textContent = t('modaltitle', { kind: d.kind || '' });
   kmBody.replaceChildren();
   kmError.replaceChildren();
 
-  kmBody.append(row('console', '<a href="' + d.console_url + '" target="_blank" rel="noopener">' + d.console_url + '</a>'));
+  kmBody.append(row(t('row.console'), '<a href="' + d.console_url + '" target="_blank" rel="noopener">' + d.console_url + '</a>'));
   kmBody.append(keyRow(d.api_key));
-  kmBody.append(row('expires', '<span data-expires="' + d.expires_at + '"></span>'));
-  if (d.app) kmBody.append(row('app', '<code>' + d.app + '</code>'));
-  if (d.template) kmBody.append(row('template', '<code>' + d.template + '</code>'));
-  kmBody.append(row('how', kind === 'sandboxlab'
-    ? 'Open the link — the key is already in it.'
-    : 'Open the console and paste the key.'));
+  kmBody.append(row(t('row.expires'), '<span data-expires="' + d.expires_at + '"></span>'));
+  if (d.app) kmBody.append(row(t('row.app'), '<code>' + d.app + '</code>'));
+  if (d.template) kmBody.append(row(t('row.template'), '<code>' + d.template + '</code>'));
+  kmBody.append(row(t('row.how'), d.kind === 'sandboxlab' ? t('how.sandbox') : t('how.other')));
 
   if (d.warning) {
     const w = document.createElement('div'); w.className = 'warnbox'; w.textContent = d.warning;
@@ -777,28 +1048,29 @@ function showLab(d, kind) {
   }
   const once = document.createElement('div');
   once.className = 'once';
-  once.textContent = 'This key is shown once, now. It is not shown again — copy it before closing.';
+  once.textContent = t('once');
   kmBody.append(once);
 
-  kmClose.textContent = 'Close';
+  kmClose.textContent = t('close');
   kmConfirm.disabled = false;
-  kmConfirm.textContent = 'Open the lab';
+  kmConfirm.textContent = t('open');
   kmConfirm.onclick = () => window.open(d.console_url, '_blank', 'noopener');
-  openModal();
-  tick();
 }
+// shownLab is the lab the dialog is currently handing over, kept so the dialog
+// can be redrawn in another language without the caller having to hold it.
+let shownLab = null;
 // keyRow renders the one-time key with a copy button. It is the only place a
 // key ever appears, and it is not stored anywhere on the page afterwards.
 function keyRow(key) {
-  const r = row('api key', '', 'key');
+  const r = row(t('row.key'), '', 'key');
   const v = r.querySelector('.v');
   v.className = 'v keyline';
-  const code = document.createElement('code'); code.textContent = key || '(none)';
-  const copy = document.createElement('button'); copy.className = 'small'; copy.textContent = 'Copy';
+  const code = document.createElement('code'); code.textContent = key || t('none');
+  const copy = document.createElement('button'); copy.className = 'small'; copy.textContent = t('copy');
   copy.onclick = async () => {
-    try { await navigator.clipboard.writeText(key); copy.textContent = 'Copied'; }
-    catch (e) { copy.textContent = 'Select it'; }
-    setTimeout(() => { copy.textContent = 'Copy'; }, 1500);
+    try { await navigator.clipboard.writeText(key); copy.textContent = t('copied'); }
+    catch (e) { copy.textContent = t('select'); }
+    setTimeout(() => { copy.textContent = t('copy'); }, 1500);
   };
   v.append(code, copy);
   return r;
@@ -806,6 +1078,8 @@ function keyRow(key) {
 // The button is the one action on the page; the tabs that change what the page
 // is about are wired per tab in renderTabs.
 createBtn.onclick = create;
+renderStatic();
+renderLang();
 loadStatus();
 // Poll, so an environment that is booting becomes a lab without a reload. The
 // interval is short enough to feel live and long enough not to hammer.

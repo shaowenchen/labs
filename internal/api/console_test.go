@@ -53,6 +53,100 @@ func TestConsoleScriptParses(t *testing.T) {
 	}
 }
 
+// TestConsoleStringsAreTranslated guards the second invisible mistake this page
+// can make. A language table that has drifted from the code does not fail to
+// build and does not render blank: t() falls back to the key, so the page shows
+// "row.console" where it meant to show a word. It is only visible in the one
+// language nobody testing the page reads.
+//
+// The keys are read out of the calls to t('...'), and every one must be present
+// in every table — English, and each translation beside it.
+func TestConsoleStringsAreTranslated(t *testing.T) {
+	script := scriptOf(t)
+
+	// The tables themselves: the keys each language defines.
+	langs := map[string]map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?ms)^  ([a-z]{2}): \{\n(.*?)^  \},\n`).FindAllStringSubmatch(script, -1) {
+		keys := map[string]bool{}
+		for _, k := range regexp.MustCompile(`'([a-z][\w.]*)':`).FindAllStringSubmatch(m[2], -1) {
+			keys[k[1]] = true
+		}
+		langs[m[1]] = keys
+	}
+	if len(langs["en"]) == 0 {
+		t.Fatal("no English string table found")
+	}
+	// The values the tables carry can be checked for holes: a string that means
+	// to be filled in but has no placeholder would print a brace to the reader.
+	for _, lang := range []string{"zh"} {
+		if len(langs[lang]) == 0 {
+			t.Errorf("the %s table is missing or empty", lang)
+		}
+	}
+
+	// The keys the page actually asks for. A call may be written with the key
+	// inline or through a ternary, so both spellings are collected.
+	used := map[string]bool{}
+	for _, k := range regexp.MustCompile(`\bt\(\s*'([\w.]+)'`).FindAllStringSubmatch(script, -1) {
+		used[k[1]] = true
+	}
+	if len(used) < 20 {
+		t.Fatalf("found only %d translated strings; the scan has probably broken", len(used))
+	}
+	for k := range used {
+		for lang, keys := range langs {
+			if !keys[k] {
+				t.Errorf("the %s table has no %q, which the page asks for; it would show the key itself", lang, k)
+			}
+		}
+	}
+	for lang, keys := range langs {
+		for k := range keys {
+			if !used[k] {
+				t.Errorf("the %s table defines %q, which nothing asks for", lang, k)
+			}
+		}
+	}
+
+	// A translation must fill in the same placeholders as the English. One that
+	// drops {h} prints "小时12分" with the hour missing and no sign that anything
+	// was left out — the numbers are all still numbers.
+	values := map[string]map[string]string{}
+	for _, m := range regexp.MustCompile(`(?ms)^  ([a-z]{2}): \{\n(.*?)^  \},\n`).FindAllStringSubmatch(script, -1) {
+		vals := map[string]string{}
+		for _, kv := range regexp.MustCompile(`'([a-z][\w.]*)': '([^']*)'`).FindAllStringSubmatch(m[2], -1) {
+			vals[kv[1]] = kv[2]
+		}
+		values[m[1]] = vals
+	}
+	placeholder := regexp.MustCompile(`\{(\w+)\}`)
+	for k, en := range values["en"] {
+		want := map[string]bool{}
+		for _, m := range placeholder.FindAllStringSubmatch(en, -1) {
+			want[m[1]] = true
+		}
+		for lang, vals := range values {
+			if lang == "en" {
+				continue
+			}
+			got := map[string]bool{}
+			for _, m := range placeholder.FindAllStringSubmatch(vals[k], -1) {
+				got[m[1]] = true
+			}
+			for name := range want {
+				if !got[name] {
+					t.Errorf("the %s %q drops the {%s} that the English has (%q); it would print with that value missing", lang, k, name, en)
+				}
+			}
+			for name := range got {
+				if !want[name] {
+					t.Errorf("the %s %q has a {%s} the English does not (%q)", lang, k, name, en)
+				}
+			}
+		}
+	}
+}
+
 // TestConsoleScriptIsNotGo is the same check without a runtime.
 //
 // It looks for the one mistake that was actually made: a Go keyword opening a
