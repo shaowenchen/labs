@@ -146,11 +146,7 @@ const consoleHTML = `<!doctype html>
   .row.err { color: var(--err); }
 
   /* ── one tab per kind ───────────────────────────────────────────────── */
-  /* The strip is the card's top edge: the tabs sit on the border itself, the
-     active one painted in the surface colour and without its bottom edge, so
-     it reads as part of the panel below it. The strip scrolls sideways rather
-     than wrapping, which keeps every tab on one line.
-     The card is drawn only once a kind exists — "has" is set from the script
+  /* The card is drawn only once a kind exists — "has" is set from the script
      that draws them, because a container holding an empty strip is not
      :empty and would otherwise leave a bare outline on the page. */
   #kinds { display: none; }
@@ -198,52 +194,50 @@ const consoleHTML = `<!doctype html>
      own — the card around the strip is the only border. */
   .kind { display: none; padding: 16px 20px 18px; }
   .kind.on { display: block; }
-  /* Status on the left, the one action on the right: the panel says what state
-     its kind is in and offers what can be done about it, on one line. */
+  /* The state on the left, the one action on the right: the panel says what
+     state its kind is in and offers what can be done about it, on one line.
+     The state is a quiet inline word rather than a row of its own — on a kind
+     that is up it is the least interesting thing here, and giving it a line
+     pushed the count that matters down the page. */
   .kind-head {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 12px; flex-wrap: wrap; min-height: 40px;
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 14px; flex-wrap: wrap;
   }
-  .kind .card { background: none; border: 0; box-shadow: none; border-radius: 0; overflow: visible; }
-  .kind .card:empty { display: none; }
-  .kind h3 {
-    font-size: .74rem; text-transform: uppercase; letter-spacing: .09em;
-    color: var(--muted); font-weight: 600; margin: 18px 0 10px;
-  }
-
-  .env { padding: 11px 0; border-top: 1px solid var(--line-soft); }
-  .env:first-child { border-top: 0; padding-top: 0; }
-  .env .top { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-  .env .name { font-weight: 600; }
-  .env .meta { color: var(--muted); font-size: .85rem; }
-  .env .msg {
-    color: var(--muted); font-size: .86rem; margin-top: 7px;
-    overflow-wrap: anywhere;
-  }
-  .env .msg a { color: var(--muted); }
-
-  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-  .dot.ok { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
-  .dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
-  .dot.err { background: var(--err); box-shadow: 0 0 0 3px var(--err-soft); }
-
-  .ok { color: var(--ok); }
-  .warn { color: var(--warn); }
-  .err { color: var(--err); }
-
   /* A state, as a word with a dot before it rather than a pill: the pill drew a
      box around a single word, which on a page this quiet read as a button. */
-  .tail {
+  .state {
     display: inline-flex; align-items: center; gap: 7px;
     font-size: .87rem; color: var(--muted);
   }
-  .tail::before {
+  .state::before {
     content: ''; width: 8px; height: 8px; border-radius: 50%;
     background: currentColor; flex: none;
   }
-  .tail.ok { color: var(--ok); }
-  .tail.warn { color: var(--warn); }
-  .tail.err { color: var(--err); }
+  .state.ok { color: var(--ok); }
+  .state.warn { color: var(--warn); }
+  .state.err { color: var(--err); }
+
+  /* What the environment is carrying, then the labs in it — one list, with no
+     heading over either half. The count and the rows below it are the same fact
+     read from the same source; heading them separately only made the reader
+     work out how the two related. */
+  .usage { margin-top: 6px; font-size: .87rem; color: var(--muted); }
+  .labs { margin-top: 16px; }
+  .lab { padding: 11px 0; border-top: 1px solid var(--line-soft); }
+  .lab:first-child { padding-top: 0; border-top: 0; }
+  .lab .line { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .lab .id { font: 600 .88rem/1.5 var(--mono); overflow-wrap: anywhere; }
+  /* The instance's own state, undecorated: it is the environment's word, not a
+     second opinion on whether the lab is any good, and the accent here would
+     have been the third thing on the line competing for the eye. */
+  .lab .st { font-size: .82rem; color: var(--muted); }
+  .lab .meta { color: var(--muted); font-size: .85rem; }
+  /* Why an environment is not up, in the environment's own words. It is the one
+     thing the state word cannot say, so it is the only prose in the panel. */
+  .reason {
+    margin-top: 13px; font-size: .86rem; color: var(--muted);
+    overflow-wrap: anywhere;
+  }
 
   code {
     font: .84rem/1.45 var(--mono);
@@ -433,7 +427,7 @@ function state(kind) {
   // switched to, so the tab already says which kind this is; what the panel adds
   // is the state in words, which the tab cannot fit.
   const head = document.createElement('div'); head.className = 'kind-head';
-  const st = document.createElement('span'); st.className = 'tail';
+  const st = document.createElement('span'); st.className = 'state';
   const btn = document.createElement('button');
   btn.onclick = () => begin(kind);
   head.append(st, btn);
@@ -448,15 +442,17 @@ function state(kind) {
   tab.onclick = () => show(kind);
   tabsBox.append(tab); kindsBox.append(sec);
 
+  // What the environment carries, why it is not up when it is not, and the labs
+  // it has. Three separate elements because each is cleared on its own as the
+  // poll redraws them, and only one of them is usually non-empty.
   const errBox = document.createElement('div');
-  const envBox = document.createElement('div'); envBox.className = 'card';
-  const runningBox = document.createElement('div'); runningBox.className = 'card';
-  const runningHead = document.createElement('h3'); runningHead.textContent = 'Running';
-  runningHead.hidden = true;
+  const usageBox = document.createElement('div'); usageBox.className = 'usage';
+  const reasonBox = document.createElement('div'); reasonBox.className = 'reason';
+  const labsBox = document.createElement('div'); labsBox.className = 'labs';
 
-  sec.append(head, errBox, envBox, runningHead, runningBox);
+  sec.append(head, errBox, usageBox, reasonBox, labsBox);
 
-  s = { sec, tab, tick, tail: st, btn, errBox, envBox, runningBox, runningHead, up: null, error: null };
+  s = { sec, tab, tick, state: st, btn, errBox, usageBox, reasonBox, labsBox, up: null, error: null };
   sections.set(kind, s);
   return s;
 }
@@ -476,8 +472,8 @@ function renderKinds(list, labs, templates) {
     // one — hiding it would leave the page saying "starting" with nothing that
     // could start.
     s.up = s.up === null ? !!e.ready : (s.up || !!e.ready);
-    s.tail.textContent = e.ready ? 'ready' : (e.unauthorized ? 'key needed' : 'starting');
-    s.tail.className = 'tail ' + (e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn'));
+    s.state.textContent = e.ready ? 'ready' : (e.unauthorized ? 'key needed' : 'starting');
+    s.state.className = 'state ' + (e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn'));
     s.tick.className = 'tick ' + (e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn'));
     s.btn.textContent = s.up ? 'Get a lab' : 'Start ' + e.kind;
     s.btn.dataset.ready = s.up ? 'up' : 'down';
@@ -485,11 +481,12 @@ function renderKinds(list, labs, templates) {
     s.templates = templates[e.kind] || [];
   });
 
-  // Environments and labs, under their own kind. The environment rows are
-  // rebuilt from scratch each poll — they are plain text, and there is nothing
-  // in them worth preserving — so they are cleared once here rather than
-  // accumulating a row per poll behind the panel.
-  for (const [, s] of sections) s.envBox.replaceChildren();
+  // A panel's body is rebuilt from scratch each poll — it is plain text, and
+  // there is nothing in it worth preserving — so it is cleared once here rather
+  // than accumulating a row per poll behind the panel.
+  for (const [, s] of sections) {
+    s.usageBox.replaceChildren(); s.reasonBox.replaceChildren(); s.labsBox.replaceChildren();
+  }
   (list || []).forEach(e => { if (sections.has(e.kind)) renderEnvs(sections.get(e.kind), e); });
   (labs || []).forEach(l => { if (sections.has(l.kind)) renderRunning(sections.get(l.kind), l); });
 
@@ -514,32 +511,35 @@ function renderKinds(list, labs, templates) {
   // unconfigured deployment shows an empty outline.
   kindsBox.classList.toggle('has', sections.size > 0);
 }
-// renderEnvs fills one kind's cluster status: one row per environment it runs,
-// with how much of it is in use and, when it is down, why.
+// renderEnvs fills one kind's environment: how much of it is in use, and, when
+// it is down, why.
 //
-// The row does not repeat the state: the tab already carries the dot and the
-// panel heading already says the state in words, so a third copy here would be
-// the same fact three times. What is left is what those cannot say — the
-// environment's own name, its usage, and the reason it is not usable.
+// Neither the environment's name nor its state is repeated here. The name is
+// the tab the reader is looking at, and the state is the word in the head — a
+// second copy of either under it would be the same fact twice more. What is
+// left is what neither can say: how much of the environment is spoken for, and,
+// when it is not up, the reason in the environment's own words.
+//
+// The count is drawn only when the environment is up, because only then is it a
+// reading. A down environment is never asked how much it holds — there is
+// nothing at the other end to answer — so its count is zero by construction, and
+// "0 of 8 in use" under "starting" is a number nobody produced, read by someone
+// deciding whether to press the button. The reason line is the honest answer
+// there, and it is already below.
+//
+// One line for every kind, so the two are read the same way. applab lends out
+// named application slots, and a lab holds one for as long as it lasts;
+// sandboxlab has no slots — a sandbox is created on demand — so its number is
+// what is running rather than what is left.
 function renderEnvs(s, e) {
-  const box = document.createElement('div'); box.className = 'env';
-  const top = document.createElement('div'); top.className = 'top';
-  top.append(Object.assign(document.createElement('span'), { className: 'name', textContent: e.id }));
-  box.append(top);
-  // One line for every kind, so the two are read the same way. applab lends out
-  // named application slots, and a lab holds one for as long as it lasts;
-  // sandboxlab has no slots — a sandbox is created on demand — so its number is
-  // what is running rather than what is left.
-  if (e.capacity) {
-    const what = e.kind === 'sandboxlab'
+  if (e.ready && e.capacity) {
+    s.usageBox.textContent = e.kind === 'sandboxlab'
       ? ('sandboxes: ' + e.occupied + ' of ' + e.capacity + ' in use')
       : ('application slots: ' + e.occupied + ' of ' + e.capacity + ' in use');
-    box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: what }));
   }
-  // Only when it is down: "starting" is already in the heading, so repeating it
-  // per environment would be noise, but the reason it is down is worth saying.
-  if (!e.ready && e.message) box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.message }));
-  s.envBox.append(box);
+  // Only when it is down: a reason is what the state word cannot give, and a
+  // healthy environment has none to give.
+  if (!e.ready && e.message) s.reasonBox.textContent = e.message;
 }
 // setFooter renders the build identity and which kinds are in play.
 //
@@ -588,20 +588,28 @@ let sessionTTL = 0; // seconds; from /config, for kinds that report no expiry
 // this service did not itself hand out — and it never carries a key: a key is
 // shown once, at creation, and this list exists so it does not have to be shown
 // again.
+//
+// The state is the environment's own word for the instance and is shown as it
+// came, lowercased. It is not decorated into "running" or "idle": applab's
+// "created" means an app record with nothing deployed behind it — a slot an
+// earlier lab has given back but that is not free again until its app is gone —
+// and any friendlier word would be this page's guess at what that implies.
 function renderRunning(s, l) {
-  s.runningBox.replaceChildren();
   const items = l.labs || [];
-  s.runningHead.hidden = items.length === 0;
   items.forEach(it => {
-    const box = document.createElement('div'); box.className = 'env';
-    const top = document.createElement('div'); top.className = 'top';
-    const st = document.createElement('span'); st.className = 'tail'; st.textContent = it.state || 'running';
+    const box = document.createElement('div'); box.className = 'lab';
+    const line = document.createElement('div'); line.className = 'line';
+    line.append(Object.assign(document.createElement('span'), { className: 'id', textContent: it.id }));
+    if (it.state) {
+      line.append(Object.assign(document.createElement('span'), {
+        className: 'st', textContent: String(it.state).toLowerCase() }));
+    }
     const left = document.createElement('span'); left.className = 'meta'; left.dataset.expires = expiresOf(it);
     const at = document.createElement('span'); at.className = 'meta'; at.dataset.created = it.created_at || '';
-    top.append(Object.assign(document.createElement('span'), { className: 'name', textContent: it.id }), st, left, at);
-    if (it.template) top.append(Object.assign(document.createElement('span'), { className: 'meta', textContent: 'template ' + it.template }));
-    box.append(top);
-    s.runningBox.append(box);
+    line.append(left, at);
+    if (it.template) line.append(Object.assign(document.createElement('span'), { className: 'meta', textContent: 'template ' + it.template }));
+    box.append(line);
+    s.labsBox.append(box);
   });
   tick();
 }
