@@ -372,16 +372,22 @@ func (c Config) EnvByID(id string) (model.Env, bool) {
 // the cluster, so raising it raises what the cluster holds.
 const defaultEnvSlots = 8
 
-// basePathFor is the path a project's whole deployment is served under. It is a
-// function of the project, not a setting: applab is served under /applab and
-// sandboxlab under /sandbox, and a deployment that changed it in only one of
-// the two places — here and the chart — would poll an address nothing answers.
+// basePathFor is the path a project's whole deployment is served under by
+// default: applab is served under /applab and sandboxlab under /sandboxlab.
+//
+// It was fixed rather than settable, on the reasoning that the path is a
+// property of the project. It is not — the deployment charts set it, and one of
+// them now serves sandboxlab under /sandboxlab — so this is a default, and
+// LABS_BASE_PATH_<ID> overrides it exactly as LABS_DOMAIN_<ID> overrides the
+// hostname. A wrong guess here is not a missing feature but a dead environment:
+// every probe and every provision goes to an address nothing answers, and the
+// page reports the environment as not up.
 func basePathFor(kind model.Kind) string {
 	switch kind {
 	case model.KindApplab:
 		return "/applab"
 	case model.KindSandboxlab:
-		return "/sandbox"
+		return "/sandboxlab"
 	default:
 		return ""
 	}
@@ -442,6 +448,14 @@ func buildEnvs(specs []envSpec, slots int, domainSuffix, ref, fallbackKey string
 			domain = defaultDomains[kind]
 		}
 
+		// The path under the hostname, overridden the same way. A deployment
+		// whose chart serves the project somewhere other than the default would
+		// otherwise be probed and provisioned at an address nothing answers.
+		basePath := strings.TrimSpace(os.Getenv("LABS_BASE_PATH_" + id))
+		if basePath == "" {
+			basePath = basePathFor(kind)
+		}
+
 		env := model.Env{
 			ID:       id,
 			Kind:     kind,
@@ -450,7 +464,7 @@ func buildEnvs(specs []envSpec, slots int, domainSuffix, ref, fallbackKey string
 			Ref:      ref,
 			Scheme:   "https",
 			Domain:   domain,
-			BasePath: basePathFor(kind),
+			BasePath: basePath,
 			Template: strings.TrimSpace(os.Getenv("LABS_TEMPLATE_" + id)),
 			Slots:    slotNames(slots),
 			Capacity: slots,

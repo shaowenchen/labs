@@ -332,14 +332,11 @@ func TestLongErrorBodyIsShortened(t *testing.T) {
 	}
 }
 
-// Live reports the slots that are actually running, and only those: an app
-// still in "created" is a pre-made slot with nothing behind it, which is what
-// an idle slot is, so it is not a running lab and must not be counted.
-// The environment's list is the count, so every slot it has an app for is
-// reported — including one whose app is recorded but not deployed, which is the
-// state a slot is in right after a lab is handed out. An app outside the
-// environment's own slots is still left out, so a person's hand-made app does
-// not push the count past the capacity the slots define.
+// Live reports every slot the environment has an app for, whatever the app's
+// state — a slot an earlier session held is not free again until its app is
+// gone, and the environment's own list is what says so. An app outside the
+// environment's own slots is left out, so a person's hand-made app does not
+// push the count past the capacity the slots define.
 func TestLiveReportsEverySlotTheEnvironmentHas(t *testing.T) {
 	f := &fakeAppLab{apps: []map[string]any{
 		{"id": "lab-01", "status": "created", "created_at": "2026-10-04T13:00:00Z"},
@@ -367,5 +364,38 @@ func TestLiveReportsEverySlotTheEnvironmentHas(t *testing.T) {
 	// An applab app has no expiry of its own; the caller applies the session clock.
 	if !got[0].ExpiresAt.IsZero() || !got[1].ExpiresAt.IsZero() {
 		t.Errorf("applab Live should carry no expiry, got %+v", got)
+	}
+}
+
+// Provision and Live must agree about a slot that was just handed out. Provision
+// creates the app inert — auto_deploy is off, so applab reports it as "created"
+// until the caller pushes something into it — and Live is what the page draws
+// its rows from. Filtering "created" out of Live therefore made a lab vanish
+// from the list the instant it was created and only reappear if the caller
+// deployed into the slot, which is exactly backwards: the moment a caller has a
+// lab is when they are looking for it.
+func TestProvisionedSlotIsVisibleToLive(t *testing.T) {
+	// What applab reports for an app that was created and nothing more, which is
+	// what Provision leaves behind: it creates the app with auto_deploy off, so
+	// nothing is behind it until the caller pushes something in.
+	f := &fakeAppLab{apps: []map[string]any{
+		{"id": "lab-01", "status": "created", "created_at": "2026-10-04T13:00:00Z"},
+	}}
+	srv := f.server("/applab")
+	defer srv.Close()
+	env := envWithURL(srv.URL, "/applab")
+	env.Slots = []string{"lab-01"}
+
+	d := newDriver(t)
+	if _, err := d.Provision(context.Background(), env, req("sess-1", "lab-01")); err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+
+	got, err := d.Live(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Live: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "lab-01" {
+		t.Fatalf("a just-provisioned slot is not in the list: %+v", got)
 	}
 }

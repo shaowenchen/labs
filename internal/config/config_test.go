@@ -137,8 +137,8 @@ func TestSandboxlabRepositoryIsRecognised(t *testing.T) {
 	if e.ID != "SANDBOXLAB" {
 		t.Errorf("id = %q, want SANDBOXLAB", e.ID)
 	}
-	if e.BasePath != "/sandbox" {
-		t.Errorf("base_path = %q, want /sandbox", e.BasePath)
+	if e.BasePath != "/sandboxlab" {
+		t.Errorf("base_path = %q, want /sandboxlab", e.BasePath)
 	}
 	if e.Workflow != "debugger.yml" {
 		t.Errorf("workflow = %q, want debugger.yml", e.Workflow)
@@ -165,6 +165,32 @@ func TestPerEnvironmentDomainOverridesTheSuffix(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_DOMAIN_APPLAB": "custom.example.org"})
 	if got := mustLoad(t).Envs[0].Domain; got != "custom.example.org" {
 		t.Errorf("domain = %q, want the per-environment value", got)
+	}
+}
+
+// The base path is a default, not a property of the project: a chart that
+// serves a project somewhere else must be reachable, and getting this wrong is
+// not a missing feature but an environment that is never up.
+func TestPerEnvironmentBasePathOverridesTheDefault(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_APPLAB_REPOS":         "",
+		"LABS_SANDBOXLAB_REPOS":     "o/sandboxlab",
+		"LABS_BASE_PATH_SANDBOXLAB": "/sb",
+	})
+	var found bool
+	for _, e := range mustLoad(t).Envs {
+		if e.Kind == "sandboxlab" {
+			found = true
+			if e.BasePath != "/sb" {
+				t.Errorf("base_path = %q, want the per-environment value", e.BasePath)
+			}
+			if got := e.BaseURL(); got != "https://"+e.Domain+"/sb" {
+				t.Errorf("base url = %q, want it built from the override", got)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no sandboxlab environment to check")
 	}
 }
 
@@ -460,7 +486,7 @@ func TestSandboxlabWithAKeyIsUsable(t *testing.T) {
 		t.Fatalf("a fully configured sandboxlab environment should be usable: %v", cfg.Problems)
 	}
 	e := cfg.Envs[0]
-	if e.Kind != "sandboxlab" || e.BasePath != "/sandbox" || e.Workflow != "debugger.yml" {
+	if e.Kind != "sandboxlab" || e.BasePath != "/sandboxlab" || e.Workflow != "debugger.yml" {
 		t.Errorf("sandboxlab env = %+v", e)
 	}
 	if e.Template != "all-in-one" {
