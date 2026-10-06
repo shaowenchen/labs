@@ -35,8 +35,16 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		// sandboxlab sandbox reports its own.
 		"session_ttl_seconds": int64(s.cfg.SessionTTL.Seconds()),
 		"kinds":               list,
-		"configured":          s.cfg.Usable(),
-		"problems":            s.cfg.Problems,
+		// The repositories actually in play, and where the list came from. A
+		// deployment serving one kind when it meant to serve two is a silent
+		// mistake — nothing is broken, there is just less here than expected —
+		// and this is what makes it visible: LABS_REPOS set to one repository
+		// overrides the default, and the answer says so rather than leaving the
+		// reader to notice a missing block on the page.
+		"repos":      s.cfg.Repos,
+		"repos_from": s.cfg.ReposSource,
+		"configured": s.cfg.Usable(),
+		"problems":   s.cfg.Problems,
 		"limits": map[string]any{
 			"max_sessions":        s.cfg.SessionCeiling(),
 			"max_sessions_per_ip": s.cfg.MaxSessionsPerIP,

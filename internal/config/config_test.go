@@ -528,3 +528,24 @@ func TestPerEnvironmentKeyOverridesTheSharedOne(t *testing.T) {
 		t.Errorf("SANDBOXLAB key = %q, want its own", byID["SANDBOXLAB"])
 	}
 }
+
+// ReposSource says whether the repository list came from the variable or the
+// default, so a deployment serving fewer kinds than expected can be told which.
+func TestReposSource(t *testing.T) {
+	cases := []struct {
+		name string
+		over map[string]string
+		want string
+	}{
+		{"default", map[string]string{"LABS_REPOS": ""}, "default"},
+		{"set", map[string]string{"LABS_REPOS": "o/applab"}, "LABS_REPOS"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, tc.over)
+			if got := mustLoad(t).ReposSource; got != tc.want {
+				t.Errorf("ReposSource = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

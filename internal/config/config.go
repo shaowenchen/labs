@@ -86,6 +86,12 @@ type Config struct {
 	// environment.
 	Repos []string
 
+	// ReposSource says where Repos came from — "LABS_REPOS" when the variable
+	// was set, "default" when the built-in list was used. It is reported so a
+	// deployment that meant to serve two kinds and set the variable to one can
+	// see why only one is there, rather than only noticing a missing block.
+	ReposSource string
+
 	// EnvSlots is how many concurrent sessions each environment serves, which
 	// is the number of app ids it lends out. It applies to every environment.
 	EnvSlots int
@@ -175,6 +181,11 @@ func Load() (Config, error) {
 	repos := defaultRepos
 	setString(&repos, "LABS_REPOS", defaultRepos)
 	cfg.Repos = splitList(repos)
+	if _, set := os.LookupEnv("LABS_REPOS"); set && strings.TrimSpace(os.Getenv("LABS_REPOS")) != "" {
+		cfg.ReposSource = "LABS_REPOS"
+	} else {
+		cfg.ReposSource = "default"
+	}
 	cfg.Envs = buildEnvs(cfg.Repos, cfg.EnvSlots, cfg.DomainSuffix, cfg.DispatchRef, cfg.APIKey)
 
 	cfg.Problems = append(cfg.Problems, cfg.Validate()...)
