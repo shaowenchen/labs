@@ -192,9 +192,16 @@ const consoleHTML = `<!doctype html>
   .tabs .tick.warn { background: var(--warn); }
   .tabs .tick.err { background: var(--err); }
 
+  /* The action closes the tab's panel: what the kind is, what it is running,
+     and then the one thing you can do about it. Sat under the tabs it pushed
+     the state of the kind down the page and read as a heading; at the foot it is
+     the last line of the same reading. The rule above it separates the action
+     from what it acts on, and is drawn even when the list above is empty — the
+     separation is between the two, not between rows. */
   .actions {
     display: flex; align-items: center; justify-content: flex-end;
-    gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
+    gap: 10px; flex-wrap: wrap;
+    margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line-soft);
   }
   .controls { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
   /* The template picker and the button are one row of things used in sequence,
@@ -333,6 +340,10 @@ const consoleHTML = `<!doctype html>
   <div id="status"></div>
   <div id="panel">
     <div class="tabs" id="kinds" role="tablist" aria-label="kind of lab" hidden></div>
+    <div id="error"></div>
+    <div class="usage" id="usage"></div>
+    <div class="reason" id="reason"></div>
+    <div class="labs" id="labs"></div>
     <div class="actions">
       <span class="state" id="state"></span>
       <div class="controls">
@@ -340,10 +351,6 @@ const consoleHTML = `<!doctype html>
         <button id="create">Create a lab</button>
       </div>
     </div>
-    <div id="error"></div>
-    <div class="usage" id="usage"></div>
-    <div class="reason" id="reason"></div>
-    <div class="labs" id="labs"></div>
   </div>
   <footer id="build"></footer>
 </main>
