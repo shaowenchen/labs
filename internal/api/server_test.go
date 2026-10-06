@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/shaowenchen/labs/internal/config"
+	"github.com/shaowenchen/labs/internal/driver"
 	"github.com/shaowenchen/labs/internal/model"
 	"github.com/shaowenchen/labs/internal/ratelimit"
 	"github.com/shaowenchen/labs/internal/session"
@@ -21,28 +22,30 @@ import (
 // fakeSvc is a session service with none of the machinery behind it, so the
 // route layer's statuses and JSON are exercised on their own.
 type fakeSvc struct {
-	provision func(kind model.Kind, ip string) (session.Result, error)
+	provision func(req session.ProvisionRequest, ip string) (session.Result, error)
 	sessions  map[string]model.Session
 	released  []string
 	readyAny  bool
 	status    []session.EnvStatus
 	live      []session.LiveLabs
+	choices   []driver.Choice
 }
 
-func (f *fakeSvc) Provision(_ context.Context, kind model.Kind, ip string) (session.Result, error) {
+func (f *fakeSvc) Provision(_ context.Context, req session.ProvisionRequest, ip string) (session.Result, error) {
 	if f.provision == nil {
 		return session.Result{}, store.ErrAtCapacity
 	}
-	return f.provision(kind, ip)
+	return f.provision(req, ip)
 }
 func (f *fakeSvc) Get(id string) (model.Session, bool) { s, ok := f.sessions[id]; return s, ok }
 func (f *fakeSvc) Release(_ context.Context, id string) error {
 	f.released = append(f.released, id)
 	return nil
 }
-func (f *fakeSvc) Status(context.Context) []session.EnvStatus { return f.status }
-func (f *fakeSvc) ReadyAny(context.Context) bool              { return f.readyAny }
-func (f *fakeSvc) Live(context.Context) []session.LiveLabs    { return f.live }
+func (f *fakeSvc) Status(context.Context) []session.EnvStatus             { return f.status }
+func (f *fakeSvc) ReadyAny(context.Context) bool                          { return f.readyAny }
+func (f *fakeSvc) Live(context.Context) []session.LiveLabs                { return f.live }
+func (f *fakeSvc) ChoicesFor(context.Context, model.Kind) []driver.Choice { return f.choices }
 
 func testConfig() config.Config {
 	return config.Config{
@@ -97,7 +100,7 @@ func data[T any](t *testing.T, w *httptest.ResponseRecorder) T {
 }
 
 func TestCreateLabReturnsTheKeyOnce(t *testing.T) {
-	svc := &fakeSvc{provision: func(kind model.Kind, ip string) (session.Result, error) {
+	svc := &fakeSvc{provision: func(req session.ProvisionRequest, ip string) (session.Result, error) {
 		return session.Result{
 			Session:    model.Session{ID: "sid", Kind: model.KindApplab, App: "lab-01", ExpiresAt: time.Now().Add(2 * time.Hour)},
 			ConsoleURL: "https://a.example.com/applab",
@@ -124,9 +127,9 @@ func TestCreateLabReturnsTheKeyOnce(t *testing.T) {
 
 func TestCreateLabWithoutABodyUsesTheDefaultKind(t *testing.T) {
 	var seen model.Kind
-	svc := &fakeSvc{provision: func(kind model.Kind, ip string) (session.Result, error) {
-		seen = kind
-		return session.Result{Session: model.Session{ID: "s", Kind: kind, ExpiresAt: time.Now()}, APIKey: "k"}, nil
+	svc := &fakeSvc{provision: func(req session.ProvisionRequest, ip string) (session.Result, error) {
+		seen = req.Kind
+		return session.Result{Session: model.Session{ID: "s", Kind: req.Kind, ExpiresAt: time.Now()}, APIKey: "k"}, nil
 	}}
 	s := newTestServer(t, svc, testConfig(), 5)
 
@@ -149,7 +152,7 @@ func TestCreateLabRejectsAnUnknownKind(t *testing.T) {
 // No environment being up is the ordinary state during a reboot, and it must
 // read as "come back", not as an internal error.
 func TestCreateLabWithoutAReadyEnvIsRetryable(t *testing.T) {
-	svc := &fakeSvc{provision: func(model.Kind, string) (session.Result, error) {
+	svc := &fakeSvc{provision: func(session.ProvisionRequest, string) (session.Result, error) {
 		return session.Result{}, session.ErrNoReadyEnv
 	}}
 	cfg := testConfig()
@@ -170,7 +173,7 @@ func TestCreateLabWithoutAReadyEnvIsRetryable(t *testing.T) {
 }
 
 func TestCreateLabWhenFullIsServiceUnavailable(t *testing.T) {
-	svc := &fakeSvc{provision: func(model.Kind, string) (session.Result, error) {
+	svc := &fakeSvc{provision: func(session.ProvisionRequest, string) (session.Result, error) {
 		return session.Result{}, store.ErrAtCapacity
 	}}
 	s := newTestServer(t, svc, testConfig(), 5)
@@ -180,7 +183,7 @@ func TestCreateLabWhenFullIsServiceUnavailable(t *testing.T) {
 }
 
 func TestPerIPConcurrentLimitIsTooManyRequests(t *testing.T) {
-	svc := &fakeSvc{provision: func(model.Kind, string) (session.Result, error) {
+	svc := &fakeSvc{provision: func(session.ProvisionRequest, string) (session.Result, error) {
 		return session.Result{}, store.ErrIPLimit
 	}}
 	s := newTestServer(t, svc, testConfig(), 5)
@@ -194,7 +197,7 @@ func TestPerIPConcurrentLimitIsTooManyRequests(t *testing.T) {
 }
 
 func TestRateLimitStopsABurst(t *testing.T) {
-	svc := &fakeSvc{provision: func(kind model.Kind, ip string) (session.Result, error) {
+	svc := &fakeSvc{provision: func(req session.ProvisionRequest, ip string) (session.Result, error) {
 		return session.Result{Session: model.Session{ID: "s", ExpiresAt: time.Now()}, APIKey: "k"}, nil
 	}}
 	s := newTestServer(t, svc, testConfig(), 1) // one request per window

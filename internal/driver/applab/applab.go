@@ -254,6 +254,11 @@ func (d *Driver) Live(ctx context.Context, env model.Env) ([]driver.Live, error)
 // not "nobody is using this".
 const appStatusCreated = "created"
 
+// Choices is nil: applab hands out a named application slot and there is nothing
+// about it to pick. A lab there is the slot plus a key, and the slot is this
+// service's to allocate rather than the caller's to choose.
+func (d *Driver) Choices(context.Context, model.Env) ([]driver.Choice, error) { return nil, nil }
+
 // Reconcile rotates and stops every slot app that no live session holds.
 //
 // It considers only the environment's configured slots: an app a person created

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/shaowenchen/labs/internal/config"
+	"github.com/shaowenchen/labs/internal/driver"
 	"github.com/shaowenchen/labs/internal/model"
 	"github.com/shaowenchen/labs/internal/ratelimit"
 	"github.com/shaowenchen/labs/internal/session"
@@ -20,7 +21,7 @@ const APIVersion = "v1"
 // SessionService is the service's behaviour, as the HTTP layer uses it. It is an
 // interface so the routes can be exercised without GitHub or a live environment.
 type SessionService interface {
-	Provision(ctx context.Context, kind model.Kind, clientIP string) (session.Result, error)
+	Provision(ctx context.Context, req session.ProvisionRequest, clientIP string) (session.Result, error)
 	Get(id string) (model.Session, bool)
 	Release(ctx context.Context, id string) error
 	Status(ctx context.Context) []session.EnvStatus
@@ -29,6 +30,10 @@ type SessionService interface {
 	// Live reports what each environment is running, read from the environment
 	// itself so it survives a restart of this service.
 	Live(ctx context.Context) []session.LiveLabs
+
+	// ChoicesFor reports the templates a kind offers, for the page's picker.
+	// Empty for a kind that offers none.
+	ChoicesFor(ctx context.Context, kind model.Kind) []driver.Choice
 }
 
 // Deps is what the server needs.

@@ -121,14 +121,17 @@ const consoleHTML = `<!doctype html>
   button.small:hover:not(:disabled) { background: var(--line-soft); filter: none; }
 
   /* ── cards ──────────────────────────────────────────────────────────── */
-  #out:not(:empty), #running:not(:empty), #envs:not(:empty) {
+  #status:not(:empty) {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: var(--radius);
     box-shadow: var(--shadow);
     overflow: hidden;
   }
-  #out:not(:empty) { padding: 18px 20px; }
+  #status:not(:empty) { padding: 18px 20px; }
+  /* A request's error, which sits in its kind's section rather than in a place
+     of its own: it is about this kind, and it belongs under it. */
+  .kind .row.err { text-align: left; }
 
   .row {
     display: grid; grid-template-columns: 6.5rem 1fr; gap: 14px;
@@ -139,8 +142,38 @@ const consoleHTML = `<!doctype html>
   .row .k { color: var(--muted); font-size: .86rem; }
   .row.err { color: var(--err); }
 
-  .env { padding: 16px 20px; border-top: 1px solid var(--line-soft); }
-  .env:first-child { border-top: 0; }
+  /* ── one section per kind ───────────────────────────────────────────── */
+  .kind {
+    margin-top: 22px; padding: 18px 20px;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+  }
+  .kind-head { display: flex; align-items: center; gap: 10px; }
+  .kind-head h2 {
+    font-size: 1.05rem; font-weight: 600; letter-spacing: -.01em;
+    text-transform: none; color: var(--fg); margin: 0;
+  }
+  .kind-ctl { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 12px 0 4px; }
+  .picker { display: flex; align-items: center; gap: 7px; font-size: .86rem; color: var(--muted); }
+  select {
+    font: inherit; font-size: .88rem; padding: 8px 10px;
+    color: var(--fg); background: var(--bg);
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+  }
+  select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* The card is the border; a section's inner boxes only draw rules between
+     themselves, so nesting them does not produce a box inside a box. */
+  .kind .card { background: none; border: 0; box-shadow: none; border-radius: 0; overflow: visible; }
+  .kind .card:empty { display: none; }
+  .kind h3 {
+    font-size: .74rem; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--muted); font-weight: 600; margin: 18px 0 10px;
+  }
+
+  .env { padding: 11px 0; border-top: 1px solid var(--line-soft); }
+  .env:first-child { border-top: 0; padding-top: 0; }
   .env .top { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
   .env .name { font-weight: 600; }
   .env .meta { color: var(--muted); font-size: .85rem; }
@@ -245,13 +278,8 @@ const consoleHTML = `<!doctype html>
     <h1><span class="mark"></span>labs</h1>
     <p class="lead">Get a working environment for a couple of hours.</p>
   </header>
-  <div id="actions"></div>
-  <div id="out"></div>
-  <h2 id="running-title" hidden>Running labs</h2>
-  <div id="running"></div>
   <div id="status"></div>
-  <h2 id="envs-title" hidden>Cluster status</h2>
-  <div id="envs"></div>
+  <div id="kinds"></div>
   <footer id="build"></footer>
 </main>
 <dialog id="key-modal" class="key-modal">
@@ -266,19 +294,18 @@ const consoleHTML = `<!doctype html>
   </div>
 </dialog>
 <script>
-const out = document.getElementById('out');
 const status = document.getElementById('status');
-const envs = document.getElementById('envs');
-const envsTitle = document.getElementById('envs-title');
-const actions = document.getElementById('actions');
-const running = document.getElementById('running');
-const runningTitle = document.getElementById('running-title');
+const kindsBox = document.getElementById('kinds');
 const build = document.getElementById('build');
 const km = document.getElementById('key-modal');
 const kmTitle = document.getElementById('km-title');
 const kmBody = document.getElementById('km-body');
 const kmOpen = document.getElementById('km-open');
 const kmClose = document.getElementById('km-close');
+// sections is one entry per kind, holding the elements that section is drawn
+// into. Keeping them across polls is what lets a button keep its disabled state
+// and a picker keep its selection while the page refreshes every five seconds.
+const sections = new Map();
 function row(k, v, cls) {
   const d = document.createElement('div'); d.className = 'row' + (cls ? ' ' + cls : '');
   const kk = document.createElement('div'); kk.className = 'k'; kk.textContent = k;
@@ -300,70 +327,120 @@ function problems(list) {
   box.append(hint);
   return box;
 }
-// renderEnvs shows each environment and whether it is up. It updates in place
-// on every poll, so the page is where you watch an environment come up rather
-// than somewhere you reload.
-function renderEnvs(list) {
-  envs.replaceChildren();
-  envsTitle.hidden = !(list && list.length);
-  (list || []).forEach(e => {
-    const box = document.createElement('div'); box.className = 'env';
-    const top = document.createElement('div'); top.className = 'top';
-    // The dot is green when a lab can be made, amber while the cluster is
-    // coming up, and red when it is up but refuses our key.
-    const cls = e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn');
-    const dot = document.createElement('span'); dot.className = 'dot ' + cls;
-    const name = document.createElement('span'); name.className = 'name'; name.textContent = e.kind || e.id;
-    const st = document.createElement('span'); st.className = 'tail'; st.textContent = e.ready ? 'ready' : (e.unauthorized ? 'key needed' : 'starting');
-    top.append(dot, name, st, Object.assign(document.createElement('span'), { className: 'meta', textContent: e.id }));
-    box.append(top);
-    // One line for every kind, so the two are read the same way. applab lends
-    // out named application slots, and a lab holds one for as long as it lasts;
-    // sandboxlab has no slots — a sandbox is created on demand — so its number
-    // is what is running rather than what is left.
-    if (e.capacity) {
-      const what = e.kind === 'sandboxlab'
-        ? ('sandboxes: ' + e.occupied + ' of ' + e.capacity + ' in use')
-        : ('application slots: ' + e.occupied + ' of ' + e.capacity + ' in use');
-      box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: what }));
-    }
-    if (e.console_url) {
-      const u = document.createElement('div'); u.className = 'msg';
-      const a = document.createElement('a'); a.href = e.console_url; a.textContent = e.console_url; a.target = '_blank'; a.rel = 'noopener';
-      u.append(a); box.append(u);
-    }
-    if (!e.ready && e.message) box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.message }));
-    envs.append(box);
-  });
-}
-// renderActions offers one button per kind the deployment serves, so either
-// kind can be asked for. A kind that is not up gets a "Start" button rather
-// than none: creating a lab is what dispatches an environment's run, so hiding
-// the button while nothing runs would leave no way to ask for one at all — the
-// page would show "starting" forever with nothing starting it.
+// state prepares one kind's section, growing it the first time it is seen.
 //
-// The buttons are keyed by the set of kinds and their state, and only redrawn
-// when that changes, so the five-second poll does not replace a button under the
-// pointer.
-function renderActions(list) {
-  const kinds = [];
+// The elements are kept and re-filled rather than rebuilt, so the poll does not
+// replace a button or a picker under the pointer — which is what would make the
+// page unusable at the moment someone is reaching for it.
+function state(kind) {
+  let s = sections.get(kind);
+  if (s) return s;
+  const sec = document.createElement('section'); sec.className = 'kind';
+  const head = document.createElement('div'); head.className = 'kind-head';
+  const title = document.createElement('h2'); title.textContent = kind;
+  const st = document.createElement('span'); st.className = 'tail';
+  head.append(title, st);
+
+  const ctl = document.createElement('div'); ctl.className = 'kind-ctl';
+  const picker = document.createElement('label'); picker.className = 'picker'; picker.hidden = true;
+  const pickerName = document.createElement('span'); pickerName.textContent = 'template';
+  const select = document.createElement('select'); select.id = 'tpl-' + kind;
+  picker.append(pickerName, select);
+  const btn = document.createElement('button');
+  btn.onclick = () => requestLab(kind, select.value, btn);
+  ctl.append(picker, btn);
+
+  const errBox = document.createElement('div');
+  const envBox = document.createElement('div'); envBox.className = 'card';
+  const runningBox = document.createElement('div'); runningBox.className = 'card';
+  const runningHead = document.createElement('h3'); runningHead.textContent = 'Running';
+  runningHead.hidden = true;
+
+  sec.append(head, ctl, errBox, envBox, runningHead, runningBox);
+  kindsBox.append(sec);
+
+  s = { sec, tail: st, picker, select, btn, errBox, envBox, runningBox, runningHead, up: null, key: '', error: null };
+  sections.set(kind, s);
+  return s;
+}
+// renderKinds draws one section per kind the deployment serves, and only that
+// kind's environments and labs under it — so the two are told apart at a glance
+// instead of interleaved in one list.
+function renderKinds(list, labs, templates) {
   (list || []).forEach(e => {
     if (!e.kind) return;
-    let k = kinds.find(x => x.kind === e.kind);
-    if (!k) { k = { kind: e.kind, ready: false }; kinds.push(k); }
-    k.ready = k.ready || !!e.ready; // ready if any environment of the kind is
+    const s = state(e.kind);
+    // How the action reads, and whether it is a "start" or a "get", depends on
+    // whether anything of this kind is up. Same rule as before: a kind with
+    // nothing running still gets a button, because pressing it is what starts
+    // one — hiding it would leave the page saying "starting" with nothing that
+    // could start.
+    s.up = s.up === null ? !!e.ready : (s.up || !!e.ready);
+    s.tail.textContent = e.ready ? 'ready' : (e.unauthorized ? 'key needed' : 'starting');
+    s.tail.className = 'tail ' + (e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn'));
+    s.btn.textContent = s.up ? 'Get a ' + e.kind + ' lab' : 'Start ' + e.kind;
+    s.btn.dataset.ready = s.up ? 'up' : 'down';
+
+    // The template picker, for a kind that offers a choice of them. The options
+    // are only rebuilt when the set changes, so a selection survives the poll.
+    const opts = templates[e.kind] || [];
+    s.picker.hidden = opts.length === 0;
+    const key = opts.map(o => o.id + '|' + (o.title || '')).join(',');
+    if (s.pickerKey !== key) {
+      s.pickerKey = key;
+      const keep = s.select.value;
+      s.select.replaceChildren();
+      opts.forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.id;
+        opt.textContent = o.title && o.title !== o.id ? o.title + ' — ' + o.id : o.id;
+        if (o.description) opt.title = o.description;
+        s.select.append(opt);
+      });
+      if (opts.some(o => o.id === keep)) s.select.value = keep;
+    }
   });
-  const want = kinds.map(k => k.kind + (k.ready ? ':up' : ':down')).join(',');
-  if (actions.dataset.kinds === want) return; // nothing changed; leave the buttons
-  actions.dataset.kinds = want;
-  actions.replaceChildren();
-  kinds.forEach(k => {
-    const b = document.createElement('button');
-    b.textContent = k.ready ? 'Get a ' + k.kind + ' lab' : 'Start ' + k.kind;
-    b.style.marginRight = '.5rem';
-    b.onclick = () => requestLab(k.kind, b);
-    actions.append(b);
-  });
+
+  // Environments and labs, under their own kind.
+  (list || []).forEach(e => { if (sections.has(e.kind)) renderEnvs(sections.get(e.kind), e); });
+  (labs || []).forEach(l => { if (sections.has(l.kind)) renderRunning(sections.get(l.kind), l); });
+
+  // A kind that has gone away — a deployment reconfigured under us — takes its
+  // section with it rather than leaving a stale card on the page.
+  const live = new Set((list || []).map(e => e.kind));
+  for (const [kind, s] of sections) {
+    if (!live.has(kind)) { s.sec.remove(); sections.delete(kind); }
+  }
+}
+// renderEnvs fills one kind's cluster status: one row per environment it runs,
+// with a dot, its state, how much of it is in use, and where its console is.
+function renderEnvs(s, e) {
+  const box = document.createElement('div'); box.className = 'env';
+  const top = document.createElement('div'); top.className = 'top';
+  // The dot is green when a lab can be made, amber while the cluster is
+  // coming up, and red when it is up but refuses our key.
+  const cls = e.ready ? 'ok' : (e.unauthorized ? 'err' : 'warn');
+  top.append(Object.assign(document.createElement('span'), { className: 'dot ' + cls }));
+  top.append(Object.assign(document.createElement('span'), { className: 'name', textContent: e.id }));
+  top.append(Object.assign(document.createElement('span'), { className: 'tail', textContent: e.ready ? 'ready' : (e.unauthorized ? 'key needed' : 'starting') }));
+  box.append(top);
+  // One line for every kind, so the two are read the same way. applab lends out
+  // named application slots, and a lab holds one for as long as it lasts;
+  // sandboxlab has no slots — a sandbox is created on demand — so its number is
+  // what is running rather than what is left.
+  if (e.capacity) {
+    const what = e.kind === 'sandboxlab'
+      ? ('sandboxes: ' + e.occupied + ' of ' + e.capacity + ' in use')
+      : ('application slots: ' + e.occupied + ' of ' + e.capacity + ' in use');
+    box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: what }));
+  }
+  if (e.console_url) {
+    const u = document.createElement('div'); u.className = 'msg';
+    const a = document.createElement('a'); a.href = e.console_url; a.textContent = e.console_url; a.target = '_blank'; a.rel = 'noopener';
+    u.append(a); box.append(u);
+  }
+  if (!e.ready && e.message) box.append(Object.assign(document.createElement('div'), { className: 'msg', textContent: e.message }));
+  s.envBox.append(box);
 }
 // setFooter renders the build identity, when the page last heard from the
 // service, and which kinds are in play. The updated time sits right after the
@@ -403,27 +480,25 @@ function sinceFmt(createdAt) {
   return m + 'm ago';
 }
 let sessionTTL = 0; // seconds; from /config, for kinds that report no expiry
-// renderRunning lists every lab the environments are running, by kind, with when
-// each was created and how long it has left. It is read from the environments,
-// so it is right even for a lab this service did not itself hand out — and it
-// never carries a key: a key is shown once, at creation, and this list exists so
-// it does not have to be shown again.
-function renderRunning(lists) {
-  running.replaceChildren();
-  const any = (lists || []).some(l => (l.labs || []).length);
-  runningTitle.hidden = !any;
-  (lists || []).forEach(l => {
-    (l.labs || []).forEach(it => {
-      const box = document.createElement('div'); box.className = 'env';
-      const top = document.createElement('div'); top.className = 'top';
-      const name = document.createElement('span'); name.className = 'name'; name.textContent = l.kind;
-      const st = document.createElement('span'); st.className = 'tail'; st.textContent = it.state || 'running';
-      const left = document.createElement('span'); left.className = 'meta'; left.dataset.expires = expiresOf(it);
-      const at = document.createElement('span'); at.className = 'meta'; at.dataset.created = it.created_at || '';
-      top.append(name, st, Object.assign(document.createElement('span'), { className: 'meta', textContent: it.id }), left, at);
-      box.append(top);
-      running.append(box);
-    });
+// renderRunning lists one kind's labs, with when each was created and how long
+// it has left. It is read from the environments, so it is right even for a lab
+// this service did not itself hand out — and it never carries a key: a key is
+// shown once, at creation, and this list exists so it does not have to be shown
+// again.
+function renderRunning(s, l) {
+  s.runningBox.replaceChildren();
+  const items = l.labs || [];
+  s.runningHead.hidden = items.length === 0;
+  items.forEach(it => {
+    const box = document.createElement('div'); box.className = 'env';
+    const top = document.createElement('div'); top.className = 'top';
+    const st = document.createElement('span'); st.className = 'tail'; st.textContent = it.state || 'running';
+    const left = document.createElement('span'); left.className = 'meta'; left.dataset.expires = expiresOf(it);
+    const at = document.createElement('span'); at.className = 'meta'; at.dataset.created = it.created_at || '';
+    top.append(Object.assign(document.createElement('span'), { className: 'name', textContent: it.id }), st, left, at);
+    if (it.template) top.append(Object.assign(document.createElement('span'), { className: 'meta', textContent: 'template ' + it.template }));
+    box.append(top);
+    s.runningBox.append(box);
   });
   tick();
 }
@@ -439,14 +514,11 @@ function expiresOf(it) {
 // its own one-second timer and reads the data-expires values rather than
 // re-rendering, so the lists do not flicker under the pointer.
 function tick() {
-  document.querySelectorAll('#running [data-expires]').forEach(e => {
+  document.querySelectorAll('#kinds [data-expires]').forEach(e => {
     e.textContent = e.dataset.expires ? 'expires in ' + countdown(e.dataset.expires) : '';
   });
-  document.querySelectorAll('#running [data-created]').forEach(e => {
+  document.querySelectorAll('#kinds [data-created]').forEach(e => {
     e.textContent = e.dataset.created ? 'created ' + sinceFmt(e.dataset.created) : '';
-  });
-  document.querySelectorAll('#out [data-expires]').forEach(e => {
-    e.textContent = countdown(e.dataset.expires) + ' left · until ' + new Date(e.dataset.expires).toLocaleTimeString();
   });
   // The dialog's own countdown, so the hand-off keeps ticking while it is open.
   document.querySelectorAll('#km-body [data-expires]').forEach(e => {
@@ -480,12 +552,8 @@ async function loadStatus() {
     const cfg = body.data || {};
     setFooter(cfg);
     sessionTTL = cfg.session_ttl_seconds || 0;
-    renderRunning(cfg.labs);
-    renderEnvs(cfg.environments);
     configured = cfg.configured !== false;
-    // A button per ready kind, so either kind can be asked for; before one is
-    // up there is nothing to offer and the status list says why.
-    renderActions(configured ? cfg.environments : []);
+    renderKinds(configured ? cfg.environments : [], cfg.labs, cfg.templates || {});
     if (!configured && (cfg.problems || []).length) {
       status.replaceChildren(problems(cfg.problems));
     } else {
@@ -495,32 +563,56 @@ async function loadStatus() {
     // Say so rather than showing nothing, which is what a silent failure looks
     // like: the cluster status simply never appears.
     status.replaceChildren(row('status', 'could not reach the service: ' + e.message, 'err'));
-    renderActions([]);
+    renderKinds([], [], {});
   }
 }
-// requestLab asks for one lab of the named kind — the kind is what the button
-// says, so a deployment serving both hands out whichever was pressed, rather
-// than always the first.
-async function requestLab(kind, btn) {
-  btn.disabled = true; out.replaceChildren();
+// requestLab asks for one lab of the named kind, from the named template when
+// the kind offers a choice — the kind and template are what the section shows,
+// so a deployment serving both hands out exactly what was pressed rather than
+// always the same one.
+//
+// A failure goes into that kind's own section, so it appears under the thing it
+// is about rather than in one place that has to be read against the buttons.
+async function requestLab(kind, template, btn) {
+  const s = sections.get(kind);
+  btn.disabled = true;
+  if (s) s.error = null;
+  const req = { kind: kind };
+  if (template) req.template = template;
   try {
     const { ok, status: code, body } = await fetchJSON('api/v1/labs', {
-      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ kind: kind }) });
+      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(req) });
     if (!ok) {
-      const d = row('error', document.createTextNode(body.error || ('HTTP ' + code)).textContent, 'err');
-      if (body.retryable) d.append(Object.assign(document.createElement('span'), { textContent: ' (retryable)' }));
-      out.append(d);
-      if ((body.problems || []).length) out.append(problems(body.problems));
+      if (s) showError(s, body, code);
       loadStatus(); // show the environment the request just started
       return;
     }
     showLab(body.data, kind);
     loadStatus(); // the new lab appears in the running list on the next poll
   } catch (e) {
-    out.append(row('error', String(e), 'err'));
+    if (s) { s.error = 'could not reach the service: ' + e.message; renderError(s); }
   } finally {
     btn.disabled = false;
   }
+}
+// showError puts a failed request's message in its kind's section, with the
+// retryable marker when the answer said so.
+function showError(s, body, code) {
+  s.error = body.error || ('HTTP ' + code);
+  s.retryable = !!body.retryable;
+  s.problems = (body.problems || []).length ? body.problems : null;
+  renderError(s);
+}
+// renderError draws the section's current error, or clears it when there is
+// none. It is called from both the request path and the poll, so an error is
+// not wiped by a poll that happens to land while it is on screen.
+function renderError(s) {
+  s.errBox.replaceChildren();
+  if (!s.error) return;
+  const d = row('error', s.error, 'err');
+  if (s.retryable) d.append(Object.assign(document.createElement('span'), { textContent: ' (retryable)' }));
+  s.errBox.append(d);
+  if (s.problems) s.errBox.append(problems(s.problems));
 }
 // showLab is the hand-off: the one moment a key is shown, in a dialog that says
 // so. The key is not kept anywhere on the page afterwards — the running list

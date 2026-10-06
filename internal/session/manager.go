@@ -159,7 +159,24 @@ func (m *Manager) runningOn(ctx context.Context, env model.Env) (up bool, why st
 // all is not ready. The distinction matters to the caller — one is "we are
 // busy", the other is "we are starting" — so it is made from the evidence
 // rather than guessed.
-func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP string) (Result, error) {
+// ProvisionRequest is what a caller asked for: which kind of lab, and — for a
+// kind that offers a choice — which template to make it from.
+type ProvisionRequest struct {
+	Kind model.Kind
+
+	// Template is the caller's choice. Empty means the environment's own
+	// default, which is what a caller that named none gets.
+	Template string
+}
+
+// Provision mints a lab of the requested kind and hands it back.
+//
+// The two failures a caller can act on are separated here: "nothing is up right
+// now" and "everything that is up is full". Both leave the caller to come back,
+// but only one of them is worth starting an environment for, so the difference
+// is tracked through the pass rather than collapsed at the end.
+func (m *Manager) Provision(ctx context.Context, req ProvisionRequest, clientIP string) (Result, error) {
+	kind := req.Kind
 	if !kind.Known() {
 		return Result{}, fmt.Errorf("%w: %q", ErrUnknownKind, kind)
 	}
@@ -167,7 +184,7 @@ func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP strin
 	lim := store.Limits{MaxTotal: m.cfg.SessionCeiling(), MaxPerIP: m.cfg.MaxSessionsPerIP}
 	now := m.now()
 
-	res, err, retry := m.provisionPass(ctx, kind, clientIP, lim, now)
+	res, err, retry := m.provisionPass(ctx, req, clientIP, lim, now)
 	if err != nil || !retry {
 		return res, err
 	}
@@ -182,14 +199,79 @@ func (m *Manager) Provision(ctx context.Context, kind model.Kind, clientIP strin
 	return Result{}, fmt.Errorf("%w: no %s environment is up", ErrNoReadyEnv, kind)
 }
 
+// ErrNoSuchTemplate is a template this kind does not offer. It is the caller's
+// to fix — the alternative would be to hand them a lab they did not ask for —
+// so it maps to 400 rather than to a retry.
+var ErrNoSuchTemplate = errors.New("no such template")
+
+// ChoicesFor reports the templates a kind offers, from the first environment of
+// that kind that can be read. An environment that cannot be reached yields an
+// empty list and no error: the page shows no template picker rather than an
+// error, because a kind whose list is unavailable is still one a lab can be
+// asked for — the request simply gets the environment's own default.
+func (m *Manager) ChoicesFor(ctx context.Context, kind model.Kind) []driver.Choice {
+	drv := m.drivers[kind]
+	if drv == nil {
+		return nil
+	}
+	for _, env := range m.envsOf(kind) {
+		choices, err := drv.Choices(ctx, env)
+		if err != nil {
+			m.log.Warn("could not list an environment's templates", "env", env.ID, "error", err)
+			continue
+		}
+		if len(choices) > 0 {
+			return choices
+		}
+	}
+	return nil
+}
+
+// checkTemplate refuses a template this kind does not offer, before any slot is
+// reserved or credential minted.
+//
+// The check happens here rather than only in the driver because by the time the
+// driver sees the request a slot has been claimed and a session recorded, and a
+// bad template would have to be unwound. Asking first also lets the refusal name
+// the templates that do exist.
+func (m *Manager) checkTemplate(ctx context.Context, req ProvisionRequest) error {
+	if req.Template == "" {
+		return nil
+	}
+	choices := m.ChoicesFor(ctx, req.Kind)
+	if len(choices) == 0 {
+		// The list could not be read. The driver makes the final call with the
+		// catalog in hand; guessing here would refuse a template that is fine.
+		return nil
+	}
+	for _, c := range choices {
+		if c.ID == req.Template {
+			return nil
+		}
+	}
+	ids := make([]string, 0, len(choices))
+	for _, c := range choices {
+		ids = append(ids, c.ID)
+	}
+	return fmt.Errorf("%w: %q for %s; this deployment offers %s",
+		ErrNoSuchTemplate, req.Template, req.Kind, strings.Join(ids, ", "))
+}
+
 // provisionPass is one pass over the environments of a kind.
 //
 // It returns the delivered lab and done when one was made; an error when the
 // attempt should stop; and retry when nothing was up but starting an
 // environment might change that.
-func (m *Manager) provisionPass(ctx context.Context, kind model.Kind, clientIP string, lim store.Limits, now time.Time) (Result, error, bool) {
+func (m *Manager) provisionPass(ctx context.Context, req ProvisionRequest, clientIP string, lim store.Limits, now time.Time) (Result, error, bool) {
+	kind := req.Kind
 	sawReady := false
 	var limitErr error
+
+	// A template this deployment does not offer is refused before anything is
+	// claimed, so a typo costs a request rather than a slot.
+	if err := m.checkTemplate(ctx, req); err != nil {
+		return Result{}, err, false
+	}
 
 	for _, env := range m.envsOf(kind) {
 		drv := m.drivers[kind]
@@ -241,6 +323,7 @@ func (m *Manager) provisionPass(ctx context.Context, kind model.Kind, clientIP s
 		prov, err := drv.Provision(ctx, env, driver.ProvisionRequest{
 			SessionID: sess.ID,
 			App:       app,
+			Template:  req.Template,
 		})
 		if err != nil {
 			// Give the slot back. The session never reached the caller, so
@@ -255,12 +338,16 @@ func (m *Manager) provisionPass(ctx context.Context, kind model.Kind, clientIP s
 		if console == "" {
 			console = r.ConsoleURL
 		}
-		if err := m.store.Complete(sess.ID, console, prov.App, prov.SandboxID); err != nil {
+		// The template the driver reports, not the one asked for: a caller that
+		// named none is resolved onto a default by the driver, and what the
+		// session records has to be what ran.
+		if err := m.store.Complete(sess.ID, console, prov.App, prov.SandboxID, prov.Template); err != nil {
 			return Result{}, fmt.Errorf("record the session: %w", err), false
 		}
 		sess.ConsoleURL = console
 		sess.App = prov.App
 		sess.SandboxID = prov.SandboxID
+		sess.Template = prov.Template
 
 		m.log.Info("delivered a lab",
 			"session", sess.ID,

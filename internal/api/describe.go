@@ -16,10 +16,10 @@ func (s *Server) describe(w http.ResponseWriter, r *http.Request) {
 		"version":     buildinfo.String(),
 		"auth":        "none — every route is anonymous",
 		"endpoints": []map[string]any{
-			{"method": "POST", "path": "/api/v1/labs", "doc": "create a lab; body {\"kind\":\"applab|sandboxlab\"} optional"},
+			{"method": "POST", "path": "/api/v1/labs", "doc": "create a lab; body {\"kind\":\"applab|sandboxlab\", \"template\":\"...\"} optional, and template applies to a kind that offers a choice — see templates in GET /api/v1/config"},
 			{"method": "GET", "path": "/api/v1/labs/{id}", "doc": "read a lab back, without its key"},
 			{"method": "DELETE", "path": "/api/v1/labs/{id}", "doc": "end a lab early"},
-			{"method": "GET", "path": "/api/v1/config", "doc": "the deployment's shape and its environments"},
+			{"method": "GET", "path": "/api/v1/config", "doc": "the deployment's shape, its environments, and the templates each kind offers"},
 			{"method": "GET", "path": "/healthz", "doc": "liveness"},
 			{"method": "GET", "path": "/readyz", "doc": "whether any environment is up"},
 		},

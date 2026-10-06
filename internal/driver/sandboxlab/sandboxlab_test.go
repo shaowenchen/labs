@@ -243,3 +243,80 @@ func TestLongErrorBodyIsShortened(t *testing.T) {
 		t.Errorf("briefBody = %q, want it unchanged and trimmed", got)
 	}
 }
+
+// A template the caller named is the one created, and it comes back so the
+// session can record what ran.
+func TestProvisionUsesTheRequestedTemplate(t *testing.T) {
+	f := &fakeSandboxlab{}
+	srv := f.server("/sandbox")
+	defer srv.Close()
+
+	got, err := newDriver(t).Provision(context.Background(), envWithURL(srv.URL, "/sandbox"),
+		driver.ProvisionRequest{SessionID: "abcdef1234567890", Template: "python"})
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if got.Template != "python" {
+		t.Errorf("Template = %q, want the one asked for", got.Template)
+	}
+}
+
+// A template the environment does not offer is refused rather than quietly
+// substituted — handing someone a sandbox they did not ask for while telling
+// them they got the one they did is worse than a failed request.
+func TestProvisionRefusesATemplateTheEnvironmentDoesNotOffer(t *testing.T) {
+	f := &fakeSandboxlab{}
+	srv := f.server("/sandbox")
+	defer srv.Close()
+
+	_, err := newDriver(t).Provision(context.Background(), envWithURL(srv.URL, "/sandbox"),
+		driver.ProvisionRequest{SessionID: "abcdef1234567890", Template: "nope"})
+	if err == nil {
+		t.Fatal("Provision accepted a template the environment does not offer")
+	}
+	// The refusal names what does exist, so the next request can succeed.
+	if !strings.Contains(err.Error(), "python") || !strings.Contains(err.Error(), "all-in-one") {
+		t.Errorf("the refusal should name the available templates, got %v", err)
+	}
+	// Nothing was created for a request that could not be satisfied.
+	if contains(f.order(), "create") {
+		t.Errorf("a refused template should not create anything, calls were %v", f.order())
+	}
+}
+
+// Choices is the catalog, passed through with the titles the environment gives.
+func TestChoicesIsTheCatalog(t *testing.T) {
+	f := &fakeSandboxlab{}
+	srv := f.server("/sandbox")
+	defer srv.Close()
+
+	got, err := newDriver(t).Choices(context.Background(), envWithURL(srv.URL, "/sandbox"))
+	if err != nil {
+		t.Fatalf("Choices: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "all-in-one" || got[1].ID != "python" {
+		t.Fatalf("Choices = %+v, want the catalog's two templates", got)
+	}
+}
+
+// A configured template wins over the catalog's first, so a deployment can pin
+// what a lab is made from without a caller choosing.
+func TestProvisionPrefersTheConfiguredTemplate(t *testing.T) {
+	f := &fakeSandboxlab{}
+	srv := f.server("/sandbox")
+	defer srv.Close()
+	env := envWithURL(srv.URL, "/sandbox")
+	env.Template = "python"
+
+	got, err := newDriver(t).Provision(context.Background(), env, driver.ProvisionRequest{SessionID: "aaaaaaaa"})
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if got.Template != "python" {
+		t.Errorf("Template = %q, want the configured python", got.Template)
+	}
+	// A configured template needs no catalog lookup to resolve.
+	if contains(f.order(), "catalog") {
+		t.Errorf("a configured template should not need the catalog, calls were %v", f.order())
+	}
+}

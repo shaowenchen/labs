@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,10 +22,13 @@ type fakeDriver struct {
 	liveErr      error
 	mu           sync.Mutex
 	provisioned  []string // app ids
+	templates    []string // templates passed to Provision
 	released     []string
 	reconciled   int
 	ready        bool
 	provisionErr error
+	choices      []driver.Choice
+	choicesErr   error
 }
 
 func (f *fakeDriver) Kind() model.Kind { return model.KindApplab }
@@ -42,8 +46,16 @@ func (f *fakeDriver) Provision(_ context.Context, _ model.Env, req driver.Provis
 	}
 	f.mu.Lock()
 	f.provisioned = append(f.provisioned, req.App)
+	f.templates = append(f.templates, req.Template)
 	f.mu.Unlock()
-	return driver.Provisioned{ConsoleURL: "https://a.example.com/applab", APIKey: "key-" + req.App, App: req.App}, nil
+	// Echo the template back the way sandboxlab does, so a test can tell the
+	// session recorded what ran rather than what was asked for.
+	return driver.Provisioned{
+		ConsoleURL: "https://a.example.com/applab",
+		APIKey:     "key-" + req.App,
+		App:        req.App,
+		Template:   req.Template,
+	}, nil
 }
 
 func (f *fakeDriver) Release(_ context.Context, _ model.Env, s model.Session) error {
@@ -54,6 +66,10 @@ func (f *fakeDriver) Release(_ context.Context, _ model.Env, s model.Session) er
 }
 
 func (f *fakeDriver) EnsureSlot(context.Context, model.Env, string) error { return nil }
+
+func (f *fakeDriver) Choices(context.Context, model.Env) ([]driver.Choice, error) {
+	return f.choices, f.choicesErr
+}
 
 func (f *fakeDriver) Live(context.Context, model.Env) ([]driver.Live, error) {
 	f.mu.Lock()
@@ -94,7 +110,7 @@ func TestProvisionDeliversASession(t *testing.T) {
 	drv := &fakeDriver{ready: true}
 	m, st := testManager(t, drv, testConfig())
 
-	got, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	got, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -116,7 +132,7 @@ func TestProvisionWithNoReadyEnvIsRetryable(t *testing.T) {
 	drv := &fakeDriver{ready: false}
 	m, _ := testManager(t, drv, testConfig())
 
-	_, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	_, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if !errors.Is(err, ErrNoReadyEnv) {
 		t.Fatalf("Provision = %v, want ErrNoReadyEnv", err)
 	}
@@ -128,11 +144,11 @@ func TestTwoSessionsTakeDifferentSlots(t *testing.T) {
 	drv := &fakeDriver{ready: true}
 	m, _ := testManager(t, drv, testConfig())
 
-	a, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	a, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := m.Provision(context.Background(), model.KindApplab, "2.2.2.2")
+	b, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "2.2.2.2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +159,7 @@ func TestTwoSessionsTakeDifferentSlots(t *testing.T) {
 	if err := m.Release(context.Background(), a.Session.ID); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
-	c, err := m.Provision(context.Background(), model.KindApplab, "3.3.3.3")
+	c, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "3.3.3.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +174,7 @@ func TestProvisionRollsBackTheSlotOnFailure(t *testing.T) {
 	drv := &fakeDriver{ready: true, provisionErr: errors.New("boom")}
 	m, st := testManager(t, drv, testConfig())
 
-	if _, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1"); err == nil {
+	if _, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1"); err == nil {
 		t.Fatal("Provision should have failed")
 	}
 	if st.Total() != 0 {
@@ -169,7 +185,7 @@ func TestProvisionRollsBackTheSlotOnFailure(t *testing.T) {
 	}
 	// The slot must be usable again.
 	drv.provisionErr = nil
-	if _, err := m.Provision(context.Background(), model.KindApplab, "2.2.2.2"); err != nil {
+	if _, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "2.2.2.2"); err != nil {
 		t.Fatalf("the slot was not recoverable: %v", err)
 	}
 }
@@ -177,10 +193,10 @@ func TestProvisionRollsBackTheSlotOnFailure(t *testing.T) {
 func TestPerIPLimitIsEnforced(t *testing.T) {
 	drv := &fakeDriver{ready: true}
 	m, _ := testManager(t, drv, testConfig())
-	if _, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1"); err != nil {
+	if _, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1"); err != nil {
 		t.Fatal(err)
 	}
-	_, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	_, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if !errors.Is(err, store.ErrIPLimit) {
 		t.Fatalf("second session from one address = %v, want ErrIPLimit", err)
 	}
@@ -194,7 +210,7 @@ func TestExpireReleasesAndCallsTheDriver(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.WithClock(func() time.Time { return base })
 
-	got, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	got, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +235,7 @@ func TestExpireReleasesAndCallsTheDriver(t *testing.T) {
 
 func TestUnknownKindIsRefused(t *testing.T) {
 	m, _ := testManager(t, &fakeDriver{ready: true}, testConfig())
-	if _, err := m.Provision(context.Background(), model.Kind("nope"), "1.1.1.1"); !errors.Is(err, ErrUnknownKind) {
+	if _, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.Kind("nope")}, "1.1.1.1"); !errors.Is(err, ErrUnknownKind) {
 		t.Fatalf("Provision = %v, want ErrUnknownKind", err)
 	}
 }
@@ -227,7 +243,7 @@ func TestUnknownKindIsRefused(t *testing.T) {
 func TestReleaseIsIdempotent(t *testing.T) {
 	drv := &fakeDriver{ready: true}
 	m, _ := testManager(t, drv, testConfig())
-	got, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	got, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +301,7 @@ func TestProvisionStartsAnEnvironmentWhenNoneIsUp(t *testing.T) {
 		return true
 	})
 
-	_, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	_, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if !errors.Is(err, ErrNoReadyEnv) {
 		t.Fatalf("Provision = %v, want ErrNoReadyEnv (the environment is still booting)", err)
 	}
@@ -295,7 +311,7 @@ func TestProvisionStartsAnEnvironmentWhenNoneIsUp(t *testing.T) {
 
 	// The next request, once the environment is up, gets a lab.
 	now = now.Add(time.Minute)
-	got, err := m.Provision(context.Background(), model.KindApplab, "2.2.2.2")
+	got, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "2.2.2.2")
 	if err != nil {
 		t.Fatalf("Provision after the environment came up: %v", err)
 	}
@@ -310,7 +326,7 @@ func TestProvisionWithoutAStarterReportsNoEnvironment(t *testing.T) {
 	drv := &fakeDriver{ready: false}
 	m, _ := testManager(t, drv, testConfig())
 
-	_, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	_, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if !errors.Is(err, ErrNoReadyEnv) {
 		t.Fatalf("Provision = %v, want ErrNoReadyEnv", err)
 	}
@@ -338,7 +354,7 @@ func TestStatusFallsBackToTheRecordedCount(t *testing.T) {
 	drv := &fakeDriver{ready: true, liveErr: errors.New("unreachable")}
 	m, _ := testManager(t, drv, testConfig())
 
-	if _, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1"); err != nil {
+	if _, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -361,7 +377,7 @@ func TestStatusCountsASlotASessionHoldsButNothingHasDeployed(t *testing.T) {
 	drv := &fakeDriver{ready: true}
 	m, _ := testManager(t, drv, testConfig())
 
-	got, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	got, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
@@ -402,7 +418,7 @@ func TestStatusCountsAHeldSlotTheEnvironmentAlsoReportsOnce(t *testing.T) {
 	drv := &fakeDriver{ready: true}
 	m, _ := testManager(t, drv, testConfig())
 
-	got, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	got, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -433,7 +449,7 @@ func TestStatusDropsAReleasedSlot(t *testing.T) {
 	drv := &fakeDriver{ready: true}
 	m, _ := testManager(t, drv, testConfig())
 
-	got, err := m.Provision(context.Background(), model.KindApplab, "1.1.1.1")
+	got, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -505,5 +521,89 @@ func TestStatusGatesOnTheRun(t *testing.T) {
 	}
 	if st.Message == "" {
 		t.Error("with no run, the status should say so")
+	}
+}
+
+// A template the caller names is passed to the driver and recorded on the
+// session, so a lab made from a choice can be told apart from the default.
+func TestProvisionPassesAndRecordsTheTemplate(t *testing.T) {
+	drv := &fakeDriver{ready: true, choices: []driver.Choice{{ID: "e2b"}, {ID: "agent-infra"}}}
+	m, _ := testManager(t, drv, testConfig())
+
+	got, err := m.Provision(context.Background(),
+		ProvisionRequest{Kind: model.KindApplab, Template: "e2b"}, "1.1.1.1")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if len(drv.templates) != 1 || drv.templates[0] != "e2b" {
+		t.Errorf("driver saw templates %v, want [e2b]", drv.templates)
+	}
+	if got.Session.Template != "e2b" {
+		t.Errorf("session template = %q, want e2b", got.Session.Template)
+	}
+}
+
+// A template this kind does not offer is refused before anything is claimed: no
+// slot is reserved and no session is left behind, so a typo costs a request
+// rather than capacity.
+func TestProvisionRefusesATemplateThatIsNotOffered(t *testing.T) {
+	drv := &fakeDriver{ready: true, choices: []driver.Choice{{ID: "e2b"}}}
+	m, st := testManager(t, drv, testConfig())
+
+	_, err := m.Provision(context.Background(),
+		ProvisionRequest{Kind: model.KindApplab, Template: "nope"}, "1.1.1.1")
+	if !errors.Is(err, ErrNoSuchTemplate) {
+		t.Fatalf("Provision = %v, want ErrNoSuchTemplate", err)
+	}
+	// The refusal names what does exist, so the next request can succeed.
+	if !strings.Contains(err.Error(), "e2b") {
+		t.Errorf("the refusal should name the available templates, got %q", err)
+	}
+	if n := len(drv.provisioned); n != 0 {
+		t.Errorf("driver was asked to provision %d times, want 0", n)
+	}
+	if sessions := st.Sessions(); len(sessions) != 0 {
+		t.Errorf("a refused request left %d sessions behind", len(sessions))
+	}
+	// The slot the request would have taken is still free for the next caller.
+	if _, err := m.Provision(context.Background(),
+		ProvisionRequest{Kind: model.KindApplab, Template: "e2b"}, "1.1.1.1"); err != nil {
+		t.Fatalf("a good request after a refused one: %v", err)
+	}
+}
+
+// A kind that offers no choice takes a lab with no template, and nothing is
+// asked of the environment to resolve one.
+func TestProvisionWithNoTemplateIsUntouched(t *testing.T) {
+	drv := &fakeDriver{ready: true}
+	m, _ := testManager(t, drv, testConfig())
+
+	got, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "1.1.1.1")
+	if err != nil {
+		t.Fatalf("Provision: %v", err)
+	}
+	if got.Session.Template != "" {
+		t.Errorf("session template = %q, want empty", got.Session.Template)
+	}
+	if len(drv.templates) != 1 || drv.templates[0] != "" {
+		t.Errorf("driver saw templates %v, want one empty", drv.templates)
+	}
+}
+
+// The list of choices is the first environment that can answer. A kind whose
+// environments cannot be read yields nothing rather than an error, because a lab
+// can still be asked for — it just gets the environment's default.
+func TestChoicesForReadsTheEnvironment(t *testing.T) {
+	drv := &fakeDriver{ready: true, choices: []driver.Choice{{ID: "e2b", Title: "E2B"}}}
+	m, _ := testManager(t, drv, testConfig())
+
+	got := m.ChoicesFor(context.Background(), model.KindApplab)
+	if len(got) != 1 || got[0].ID != "e2b" {
+		t.Fatalf("ChoicesFor = %+v, want the driver's one choice", got)
+	}
+
+	drv.choicesErr = errors.New("unreachable")
+	if got := m.ChoicesFor(context.Background(), model.KindApplab); len(got) != 0 {
+		t.Errorf("an unreachable environment should yield no choices, got %+v", got)
 	}
 }

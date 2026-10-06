@@ -1,17 +1,19 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"sort"
 
 	"github.com/shaowenchen/labs/internal/buildinfo"
+	"github.com/shaowenchen/labs/internal/model"
 	"github.com/shaowenchen/labs/internal/session"
 )
 
 // getConfig answers the deployment's own shape — what it serves, how long a lab
 // lasts, and how much of it there is — without a key. It is the first call a
 // client makes, and it is what tells it whether to ask for an applab or a
-// sandboxlab lab.
+// sandboxlab lab, and what it may choose within one.
 func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 	kinds := map[string]bool{}
 	for _, env := range s.cfg.Envs {
@@ -53,7 +55,49 @@ func (s *Server) getConfig(w http.ResponseWriter, r *http.Request) {
 		},
 		"environments": envStatusJSON(s.svc.Status(r.Context())),
 		"labs":         liveJSON(s.svc.Live(r.Context())),
+		"templates":    s.templatesJSON(r.Context()),
 	})
+}
+
+// templatesJSON is the templates each kind offers, keyed by kind. A kind that
+// offers no choice is absent rather than present-and-empty, so a reader can tell
+// "there is nothing to pick here" from "the picker failed to load" — which is
+// the difference between hiding it and saying so.
+func (s *Server) templatesJSON(ctx context.Context) map[string][]map[string]any {
+	out := map[string][]map[string]any{}
+	for _, kind := range s.kinds() {
+		choices := s.svc.ChoicesFor(ctx, kind)
+		if len(choices) == 0 {
+			continue
+		}
+		rows := make([]map[string]any, 0, len(choices))
+		for _, c := range choices {
+			row := map[string]any{"id": c.ID}
+			if c.Title != "" {
+				row["title"] = c.Title
+			}
+			if c.Description != "" {
+				row["description"] = c.Description
+			}
+			rows = append(rows, row)
+		}
+		out[string(kind)] = rows
+	}
+	return out
+}
+
+// kinds is the distinct kinds this deployment serves, in a stable order.
+func (s *Server) kinds() []model.Kind {
+	seen := map[model.Kind]bool{}
+	out := make([]model.Kind, 0, len(s.cfg.Envs))
+	for _, env := range s.cfg.Envs {
+		if seen[env.Kind] {
+			continue
+		}
+		seen[env.Kind] = true
+		out = append(out, env.Kind)
+	}
+	return out
 }
 
 // liveJSON renders what each environment is running, for the page's list. It is

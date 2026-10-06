@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/shaowenchen/labs/internal/model"
@@ -12,11 +13,19 @@ import (
 	"github.com/shaowenchen/labs/internal/store"
 )
 
-// createLabRequest is the body of POST /api/v1/labs. The kind is optional: a
-// request that names none gets the deployment's default, so a caller with one
-// kind configured does not have to know its name.
+// createLabRequest is the body of POST /api/v1/labs.
+//
+// The kind is optional: a request that names none gets the deployment's default,
+// so a caller with one kind configured does not have to know its name.
+//
+// The template is optional in a different way. It only means anything for a kind
+// that offers a choice of them, and leaving it out there is not an error — it
+// asks for the environment's own default. Which is also what makes the two
+// shapes of request work: {"kind":"applab"} and {"kind":"sandboxlab",
+// "template":"e2b"}.
 type createLabRequest struct {
-	Kind string `json:"kind"`
+	Kind     string `json:"kind"`
+	Template string `json:"template,omitempty"`
 }
 
 // labResponse is a delivered lab. It is the only response that carries the API
@@ -30,6 +39,7 @@ type labResponse struct {
 	ExpiresAt  time.Time         `json:"expires_at"`
 	App        string            `json:"app,omitempty"`
 	SandboxID  string            `json:"sandbox_id,omitempty"`
+	Template   string            `json:"template,omitempty"`
 	Links      map[string]string `json:"links,omitempty"`
 
 	// Warning is a caveat the caller should see, such as a shared credential. It
@@ -66,7 +76,10 @@ func (s *Server) createLab(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := s.svc.Provision(r.Context(), kind, s.clientIP(r))
+	result, err := s.svc.Provision(r.Context(), session.ProvisionRequest{
+		Kind:     kind,
+		Template: strings.TrimSpace(req.Template),
+	}, s.clientIP(r))
 	if err != nil {
 		fail(w, r, s.provisionError(err))
 		return
@@ -81,6 +94,7 @@ func (s *Server) createLab(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:  result.Session.ExpiresAt,
 		App:        result.Session.App,
 		SandboxID:  result.Session.SandboxID,
+		Template:   result.Session.Template,
 		Links:      links,
 		Warning:    result.Warning,
 	})
@@ -103,6 +117,7 @@ func (s *Server) getLab(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:  sess.ExpiresAt,
 		App:        sess.App,
 		SandboxID:  sess.SandboxID,
+		Template:   sess.Template,
 		Links:      map[string]string{"console": sess.ConsoleURL},
 	})
 }
@@ -145,10 +160,13 @@ func (s *Server) resolveKind(requested string) (model.Kind, error) {
 //
 // The distinctions a caller acts on: a full service is "come back" (503), an
 // address that already holds its share is "not you right now" (429), no
-// environment being up is "we are starting" (503), and an unknown kind is the
-// caller's to fix (400). All of these are retryable except the last.
+// environment being up is "we are starting" (503), and an unknown kind or a
+// template the deployment does not offer is the caller's to fix (400). All of
+// these are retryable except the last two.
 func (s *Server) provisionError(err error) *apiError {
 	switch {
+	case errors.Is(err, session.ErrNoSuchTemplate):
+		return BadRequest("%s", err.Error())
 	case errors.Is(err, session.ErrUnknownKind):
 		return BadRequest("%s", err.Error())
 	case errors.Is(err, session.ErrNoReadyEnv):

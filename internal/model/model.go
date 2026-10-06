@@ -148,6 +148,12 @@ type Session struct {
 	// SandboxID is the sandboxlab sandbox this session owns, if any.
 	SandboxID string `json:"sandbox_id,omitempty"`
 
+	// Template is the sandboxlab template the sandbox was created from. It is
+	// recorded because it is what the caller chose and what a release or a
+	// listing has to name to make sense of the sandbox. Empty for applab, which
+	// has no such choice.
+	Template string `json:"template,omitempty"`
+
 	// ClientIP is who was given this session, recorded for the per-address cap
 	// and for an operator answering "where did these come from".
 	ClientIP string `json:"client_ip"`

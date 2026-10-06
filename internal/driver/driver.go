@@ -42,6 +42,11 @@ type ProvisionRequest struct {
 
 	// App is the applab slot reserved for this session. Empty for sandboxlab.
 	App string
+
+	// Template is the template the caller chose, for a kind that offers a choice
+	// of them. Empty means "the environment's own default", which is what a
+	// caller that named none gets.
+	Template string
 }
 
 // Provisioned is what a driver made: the address to deliver, and the credential
@@ -60,9 +65,26 @@ type Provisioned struct {
 	// SandboxID is the sandboxlab sandbox created, if any.
 	SandboxID string
 
+	// Template is the template actually used, when the kind offers a choice of
+	// them. It is echoed back rather than assumed, because the driver is what
+	// resolves a request that named none onto the environment's default.
+	Template string
+
 	// Warning is a caveat worth passing to the caller — for example, that the
 	// credential is shared across sessions. Empty when there is nothing to say.
 	Warning string
+}
+
+// Choice is one template a kind lets a caller pick from.
+type Choice struct {
+	// ID is what a request names, and what the driver is handed back.
+	ID string
+
+	// Title is the human-readable name, and Description the one line under it.
+	// Either may be empty for an environment that names its templates as bare
+	// ids, in which case the ID is all there is to show.
+	Title       string
+	Description string
 }
 
 // Live is one instance an environment is actually running — an applab app or a
@@ -114,6 +136,13 @@ type Driver interface {
 	// kind without slots. It is called at warm-up rather than per request so
 	// that the request path stays fast.
 	EnsureSlot(ctx context.Context, env model.Env, app string) error
+
+	// Choices lists the templates a caller may pick from, for a kind that offers
+	// a choice of them. A kind that offers none returns nil and no error, which
+	// is what a caller should read as "there is nothing to choose". A kind that
+	// offers them but cannot be reached returns an error, so the page can say
+	// the list is unavailable rather than that it is empty.
+	Choices(ctx context.Context, env model.Env) ([]Choice, error)
 
 	// Live lists the instances the environment is actually running. It is what
 	// the page shows, which is why it is read from the environment rather than

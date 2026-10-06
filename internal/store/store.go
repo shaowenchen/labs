@@ -192,7 +192,12 @@ func (s *Store) Reserve(env model.Env, sess model.Session, lim Limits) (string, 
 }
 
 // Complete records the address and details a driver minted for a session.
-func (s *Store) Complete(id, consoleURL, app, sandboxID string) error {
+//
+// The template comes back from the driver rather than from the request, because
+// only the driver knows which one it settled on: a caller that named none gets
+// the environment's own default, and the session must record what actually ran,
+// not what was asked for.
+func (s *Store) Complete(id, consoleURL, app, sandboxID, template string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.sessions {
@@ -205,6 +210,9 @@ func (s *Store) Complete(id, consoleURL, app, sandboxID string) error {
 		}
 		if sandboxID != "" {
 			s.sessions[i].SandboxID = sandboxID
+		}
+		if template != "" {
+			s.sessions[i].Template = template
 		}
 		return nil
 	}

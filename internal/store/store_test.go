@@ -125,7 +125,7 @@ func TestExpiredFindsOnlyPastSessions(t *testing.T) {
 func TestCompleteRecordsTheAddress(t *testing.T) {
 	s := New()
 	app := mustReserve(t, s, applabEnv(), "s1", "1.1.1.1")
-	if err := s.Complete("s1", "https://a.example.com/applab", app, ""); err != nil {
+	if err := s.Complete("s1", "https://a.example.com/applab", app, "", ""); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	got, ok := s.Get("s1")
@@ -141,7 +141,7 @@ func TestCompleteRecordsTheAddress(t *testing.T) {
 }
 
 func TestCompleteOnAnUnknownSessionIsNotFound(t *testing.T) {
-	if err := New().Complete("nope", "u", "", ""); err != ErrNotFound {
+	if err := New().Complete("nope", "u", "", "", ""); err != ErrNotFound {
 		t.Fatalf("Complete on an unknown session = %v, want ErrNotFound", err)
 	}
 }

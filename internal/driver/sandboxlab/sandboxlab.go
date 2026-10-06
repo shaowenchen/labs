@@ -104,13 +104,18 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 
 // Provision creates a sandbox and returns where to reach it.
 //
+// The template is the caller's, when they named one; otherwise it is the
+// environment's configured default, and failing that the catalog's first entry.
+// The one actually used is echoed back, because the caller's request may have
+// named nothing and the session has to record what ran.
+//
 // The address is the sandbox's own data-plane URL with the key in it, so the
 // link opens straight into the sandbox rather than dropping the caller on a
 // console to find it. When the environment reports no endpoint — no public URL,
 // or the data plane off — the console address is delivered instead and the key
 // is pasted there.
 func (d *Driver) Provision(ctx context.Context, env model.Env, req driver.ProvisionRequest) (driver.Provisioned, error) {
-	template, err := d.templateFor(ctx, env)
+	template, err := d.templateFor(ctx, env, req.Template)
 	if err != nil {
 		return driver.Provisioned{}, err
 	}
@@ -149,6 +154,7 @@ func (d *Driver) Provision(ctx context.Context, env model.Env, req driver.Provis
 		ConsoleURL: console,
 		APIKey:     env.APIKey,
 		SandboxID:  sb.ID,
+		Template:   template,
 		Warning:    sharedKeyWarning,
 	}, nil
 }
@@ -241,25 +247,76 @@ func (d *Driver) Reconcile(ctx context.Context, env model.Env, live []model.Sess
 	return firstErr
 }
 
-// templateFor is the template a session creates. A configured one is used as
-// given; otherwise the catalog's first template is, so a deployment that names
-// no template still gets a working sandbox from whatever it has.
-func (d *Driver) templateFor(ctx context.Context, env model.Env) (string, error) {
-	if env.Template != "" {
-		return env.Template, nil
-	}
+// Choices lists the catalog's templates — what a caller picks a sandbox from.
+// sandboxlab's catalog is the whole list of what the deployment can make, which
+// is exactly the choice being offered, so it is passed through rather than
+// filtered: a template this service has no opinion about is still one a caller
+// may want.
+func (d *Driver) Choices(ctx context.Context, env model.Env) ([]driver.Choice, error) {
 	var out struct {
 		Templates []struct {
-			ID string `json:"id"`
+			ID          string `json:"id"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
 		} `json:"templates"`
 	}
 	if err := d.call(ctx, env, http.MethodGet, "/api/v1/catalog", env.APIKey, nil, &out, false); err != nil {
-		return "", fmt.Errorf("sandboxlab: read the catalog: %w", err)
+		return nil, fmt.Errorf("sandboxlab: read the catalog: %w", err)
 	}
-	if len(out.Templates) == 0 {
+	choices := make([]driver.Choice, 0, len(out.Templates))
+	for _, t := range out.Templates {
+		if t.ID == "" {
+			continue
+		}
+		choices = append(choices, driver.Choice{ID: t.ID, Title: t.Title, Description: t.Description})
+	}
+	return choices, nil
+}
+
+// templateFor is the template a session creates: the caller's, when they named
+// one and the environment offers it; otherwise a configured default; otherwise
+// the catalog's first, so a deployment that names nothing still gets a working
+// sandbox from whatever it has.
+//
+// A requested template that the environment does not offer is refused rather
+// than substituted. Falling back would hand someone a sandbox they did not ask
+// for while telling them they got the one they did, and the refusal names the
+// ones that do exist so the next request can succeed.
+func (d *Driver) templateFor(ctx context.Context, env model.Env, requested string) (string, error) {
+	if requested != "" {
+		choices, err := d.Choices(ctx, env)
+		if err != nil {
+			return "", err
+		}
+		for _, c := range choices {
+			if c.ID == requested {
+				return requested, nil
+			}
+		}
+		return "", fmt.Errorf("sandboxlab: no template named %q: this environment offers %s",
+			requested, strings.Join(choiceIDs(choices), ", "))
+	}
+	if env.Template != "" {
+		return env.Template, nil
+	}
+	choices, err := d.Choices(ctx, env)
+	if err != nil {
+		return "", err
+	}
+	if len(choices) == 0 {
 		return "", fmt.Errorf("sandboxlab: the environment offers no templates to create a sandbox from")
 	}
-	return out.Templates[0].ID, nil
+	return choices[0].ID, nil
+}
+
+// choiceIDs is the available template ids, for an error that says what to try
+// instead of only what failed.
+func choiceIDs(choices []driver.Choice) []string {
+	out := make([]string, 0, len(choices))
+	for _, c := range choices {
+		out = append(out, c.ID)
+	}
+	return out
 }
 
 // ── naming and addresses ────────────────────────────────────────────────────
