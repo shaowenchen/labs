@@ -169,6 +169,27 @@ func TestEnsureRunningLeavesALiveRunAlone(t *testing.T) {
 	}
 }
 
+// The reason the page is given is a sentence about the environment, not about
+// how this service happens to run one. Both readers of it are people: /readyz
+// carries it for an operator, the console prints it under a kind that is not up.
+// Neither is served by the workflow's file name, and putting it there told a
+// visitor that an environment is a GitHub Actions run.
+func TestRunningReasonNamesNoInternals(t *testing.T) {
+	f := &fakeGitHub{}
+	f.setRuns() // nothing running
+	k := testStarter(t, f)
+
+	up, why, known := k.Running(context.Background(), k.targets[0])
+	if up || !known {
+		t.Fatalf("Running = (%v, %q, %v), want (false, ..., true) with nothing running", up, why, known)
+	}
+	for _, leaked := range []string{"debugger.yml", "run of", "workflow", "repo", ".yml"} {
+		if strings.Contains(why, leaked) {
+			t.Errorf("the reason %q leaks %q; it is shown to a visitor", why, leaked)
+		}
+	}
+}
+
 // An empty ref is resolved to the repository's default branch. This is the bug
 // that made a dispatch against a master-defaulted repository do nothing: the
 // service hardcoded "main", the branch did not exist, and workflow_dispatch

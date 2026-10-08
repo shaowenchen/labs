@@ -651,8 +651,13 @@ func (m *Manager) envReady(ctx context.Context, drv driver.Driver, env model.Env
 		// An error is the driver failing to ask, not the environment being down.
 		// Treated as "not ready" so a bug here degrades to a retryable 503
 		// rather than a request that hangs or a 500.
+		//
+		// The error goes to the log and NotAnswering goes back, which is what a
+		// driver does with the same case: what a caller can act on is the state,
+		// and an error string here is this service's own internals — a URL, a
+		// decode failure — shown to a visitor who cannot act on any of it.
 		m.log.Warn("readiness probe errored", "env", env.ID, "error", err)
-		r = driver.Ready{Message: err.Error()}
+		r = driver.Ready{Message: driver.NotAnswering}
 	}
 
 	m.remember(env.ID, r)

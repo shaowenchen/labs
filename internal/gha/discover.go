@@ -2,6 +2,7 @@ package gha
 
 import (
 	"context"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"strings"
@@ -64,14 +65,15 @@ func ExtractBaseURL(log, basePath string) (string, bool) {
 // thousands of pointless requests for a value that has not changed.
 type Discoverer struct {
 	client *Client
+	log    *slog.Logger
 
 	mu    sync.Mutex
 	cache map[string]string // env id -> scheme://host
 }
 
 // NewDiscoverer returns a discoverer using the given client.
-func NewDiscoverer(c *Client) *Discoverer {
-	return &Discoverer{client: c, cache: map[string]string{}}
+func NewDiscoverer(c *Client, log *slog.Logger) *Discoverer {
+	return &Discoverer{client: c, log: log, cache: map[string]string{}}
 }
 
 // Discover returns the environment's address, discovering and caching it on the
@@ -108,8 +110,8 @@ func (d *Discoverer) Forget(envID string) {
 // could not — a message for the page, not a verdict the reader has to guess
 // from.
 //
-// Two things GitHub does make this unreliable, and both are said plainly rather
-// than dressed up as "starting":
+// Two things GitHub does make this unreliable, and neither is dressed up as
+// "starting" in the log:
 //
 //   - The log archive is only served once a run has finished. While a run is in
 //     progress the endpoint answers 404, so the address cannot be read during
@@ -118,18 +120,24 @@ func (d *Discoverer) Forget(envID string) {
 //     address is visible in the run's page and its summary; neither is a file
 //     this service can fetch.
 //
-// So this is a best-effort path. A domain configured in LABS_DOMAIN_* is the one
-// that actually works, and the message says so.
+// So this is a best-effort path, and a domain configured in LABS_DOMAIN_* is the
+// one that actually works. What each failure returns is a sentence about the
+// state — the page and /readyz both show it, and neither reader is served by a
+// repository name, a workflow file or a variable to set. The detail that names
+// them goes to the log, where the operator who can act on it is looking.
 func (d *Discoverer) lookup(ctx context.Context, env model.Env) (string, string) {
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
 	runs, err := d.client.Runs(ctx, env.Repo, env.Workflow, env.Ref, 5)
 	if err != nil {
-		return "", "could not list the workflow's runs: " + err.Error()
+		d.log.Warn("could not list an environment's runs", "env", env.ID, "repo", env.Repo, "workflow", env.Workflow, "error", err)
+		return "", "the environment's address could not be found yet"
 	}
 	if len(runs) == 0 {
-		return "", "no " + env.Workflow + " run has been started in " + env.Repo + " yet; set LABS_DOMAIN_" + env.ID + " to the environment's hostname to skip this"
+		d.log.Info("no run to read an address from", "env", env.ID, "repo", env.Repo, "workflow", env.Workflow,
+			"hint", "set LABS_DOMAIN_"+env.ID+" to the environment's hostname to skip discovery")
+		return "", "the environment has not been started yet"
 	}
 
 	sawRunning := false
@@ -140,17 +148,21 @@ func (d *Discoverer) lookup(ctx context.Context, env model.Env) (string, string)
 		sawRunning = sawRunning || run.Status == "in_progress"
 		log, err := d.client.RunLogs(ctx, env.Repo, run.ID)
 		if err != nil {
-			// The common case: a running run has no downloadable log yet. Kept
-			// short, because the reader's answer is the same whichever way this
-			// failed — set the domain.
-			return "", "the environment's address could not be read from its run log; set LABS_DOMAIN_" + env.ID + " to its hostname"
+			// The common case: a running run has no downloadable log yet. The
+			// reader's answer is the same whichever way this failed — set the
+			// domain — so the error is logged and one sentence goes back.
+			d.log.Warn("could not read an environment's run log", "env", env.ID, "repo", env.Repo, "run", run.ID, "error", err,
+				"hint", "set LABS_DOMAIN_"+env.ID+" to the environment's hostname to skip discovery")
+			return "", "the environment's address could not be found yet"
 		}
 		if base, ok := ExtractBaseURL(log, env.BasePath); ok {
 			return base, ""
 		}
 	}
 	if !sawRunning {
-		return "", "the cluster is starting; its run has not begun yet"
+		return "", "the environment is starting"
 	}
-	return "", "the environment's address has not appeared in its run log; set LABS_DOMAIN_" + env.ID + " to its hostname"
+	d.log.Info("an environment's address did not appear in its log", "env", env.ID, "repo", env.Repo,
+		"hint", "set LABS_DOMAIN_"+env.ID+" to the environment's hostname to skip discovery")
+	return "", "the environment's address could not be found yet"
 }

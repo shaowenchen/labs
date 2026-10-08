@@ -49,6 +49,18 @@ type Ready struct {
 // told the state rather than handed an edge proxy's diagnostics to read.
 const NotAnswering = "the environment is not answering yet"
 
+// WrongDeployment is the verdict for an address that answered but is not the
+// environment this service expects — the shape of the response was not one it
+// knows.
+//
+// It is separate from NotAnswering because the reader's answer differs: this
+// will not fix itself by waiting, so "not answering yet" would be a promise the
+// service cannot keep. The page says so plainly, and the detail — which field
+// was missing, which route answered — goes to the log, because that is a
+// deployment mistake for whoever set it up rather than something a visitor can
+// act on.
+const WrongDeployment = "the environment is not answering as expected"
+
 // ProvisionRequest is one session to mint, already authorized by the service's
 // own limits and already recorded in the store.
 type ProvisionRequest struct {

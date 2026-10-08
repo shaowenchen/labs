@@ -61,7 +61,11 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 		return d.notAnswering(env, "config", err), nil
 	}
 	if cfg.APIVersion == "" {
-		return driver.Ready{Message: "the config response carried no api_version"}, nil
+		// Answered, but not with the shape this service knows. That is a
+		// deployment problem — the wrong thing is serving the address — and the
+		// field it is missing is this service's business, not the reader's.
+		d.log.Warn("an environment answered with no api_version", "env", env.ID, "route", "config")
+		return driver.Ready{Message: driver.WrongDeployment}, nil
 	}
 
 	// The health route is cheap and is what a deployment that is up but not

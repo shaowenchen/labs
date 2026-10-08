@@ -76,7 +76,7 @@ func Build(cfg config.Config, log *slog.Logger) *Service {
 	manager := session.New(cfg, st, drivers, log)
 	// For environments configured with no domain, the address is read from the
 	// environment's own run log.
-	manager.WithDiscovery(gha.NewDiscoverer(gh).Discover)
+	manager.WithDiscovery(gha.NewDiscoverer(gh, log).Discover)
 	// Creating a lab is what brings an environment up: the check-and-dispatch
 	// runs then, and only then. A deployment that cannot dispatch does not get a
 	// starter at all, so the request is answered as "not configured".

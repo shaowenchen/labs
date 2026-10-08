@@ -513,7 +513,7 @@ func TestStatusGatesOnTheRun(t *testing.T) {
 	drv := &fakeDriver{ready: true, live: []driver.Live{{ID: "lab-01"}}}
 	m, _ := testManager(t, drv, testConfig())
 	m.WithRunnerCheck(func(context.Context, model.Env) (bool, string, bool) {
-		return false, "no run of debugger.yml is active", true
+		return false, "the environment is not running yet", true
 	})
 
 	got := m.Status(context.Background())

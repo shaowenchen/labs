@@ -99,6 +99,13 @@ func (k *Starter) EnsureRunning(ctx context.Context, t Target) bool {
 // because the environment may well be up and it is only the listing that is
 // broken. known=true with up=false is the only case that means nothing is
 // serving the address.
+//
+// The message is a sentence about the state, because both readers of it are
+// people rather than programs: /readyz carries it for an operator and the
+// console prints it under a kind that is not up. Neither is served by the
+// workflow's file name or by the word "run" — that the environment is brought up
+// by a GitHub Actions workflow is this service's own business, and the detail
+// goes to the log.
 func (k *Starter) Running(ctx context.Context, t Target) (up bool, why string, known bool) {
 	runs, err := k.client.Runs(ctx, t.Repo, t.Workflow, t.Ref, 10)
 	if err != nil {
@@ -110,7 +117,7 @@ func (k *Starter) Running(ctx context.Context, t Target) (up bool, why string, k
 			return true, "", true
 		}
 	}
-	return false, "no run of " + t.Workflow + " is active; asking for a lab starts one", true
+	return false, "the environment is not running yet", true
 }
 
 // activeRun is the one place that decides "is an environment up", so the check,
