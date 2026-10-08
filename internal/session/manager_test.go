@@ -44,16 +44,19 @@ func (f *fakeDriver) Provision(_ context.Context, _ model.Env, req driver.Provis
 	if f.provisionErr != nil {
 		return driver.Provisioned{}, f.provisionErr
 	}
+	// Mint the app id the way applab does: from the session id, so each session
+	// gets its own name and nothing is reused.
+	app := "lab-" + req.SessionID[:8]
 	f.mu.Lock()
-	f.provisioned = append(f.provisioned, req.App)
+	f.provisioned = append(f.provisioned, app)
 	f.templates = append(f.templates, req.Template)
 	f.mu.Unlock()
 	// Echo the template back the way sandboxlab does, so a test can tell the
 	// session recorded what ran rather than what was asked for.
 	return driver.Provisioned{
 		ConsoleURL: "https://a.example.com/applab",
-		APIKey:     "key-" + req.App,
-		App:        req.App,
+		APIKey:     "key-" + app,
+		App:        app,
 		Template:   req.Template,
 	}, nil
 }
@@ -64,8 +67,6 @@ func (f *fakeDriver) Release(_ context.Context, _ model.Env, s model.Session) er
 	f.mu.Unlock()
 	return nil
 }
-
-func (f *fakeDriver) EnsureSlot(context.Context, model.Env, string) error { return nil }
 
 func (f *fakeDriver) Choices(context.Context, model.Env) ([]driver.Choice, error) {
 	return f.choices, f.choicesErr
@@ -101,7 +102,7 @@ func testConfig() config.Config {
 		MaxSessionsPerIP: 1,
 		Envs: []model.Env{{
 			ID: "applab-1", Kind: model.KindApplab, Domain: "a.example.com", BasePath: "/applab",
-			Slots: []string{"lab-01", "lab-02"}, Capacity: 2,
+			Capacity: 2,
 		}},
 	}
 }
@@ -114,8 +115,11 @@ func TestProvisionDeliversASession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if got.APIKey != "key-lab-01" {
-		t.Errorf("APIKey = %q", got.APIKey)
+	if got.APIKey[:4] != "key-" {
+		t.Errorf("APIKey = %q, want the key the driver minted", got.APIKey)
+	}
+	if got.Session.App == "" {
+		t.Error("the session did not record the app the driver minted")
 	}
 	if got.ConsoleURL != "https://a.example.com/applab" {
 		t.Errorf("ConsoleURL = %q", got.ConsoleURL)
@@ -138,9 +142,9 @@ func TestProvisionWithNoReadyEnvIsRetryable(t *testing.T) {
 	}
 }
 
-// Two callers must land on different slots, and the second slot must be free
-// once the first is released.
-func TestTwoSessionsTakeDifferentSlots(t *testing.T) {
+// Two callers get their own app, and a released one is never handed out again:
+// each session's app is minted from its own id, so nothing is reused.
+func TestTwoSessionsGetTheirOwnApp(t *testing.T) {
 	drv := &fakeDriver{ready: true}
 	m, _ := testManager(t, drv, testConfig())
 
@@ -152,8 +156,11 @@ func TestTwoSessionsTakeDifferentSlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if a.Session.App == "" || b.Session.App == "" {
+		t.Fatalf("a session has no app: %q, %q", a.Session.App, b.Session.App)
+	}
 	if a.Session.App == b.Session.App {
-		t.Fatalf("both sessions took slot %q", a.Session.App)
+		t.Fatalf("both sessions were given the app %q", a.Session.App)
 	}
 
 	if err := m.Release(context.Background(), a.Session.ID); err != nil {
@@ -163,14 +170,16 @@ func TestTwoSessionsTakeDifferentSlots(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Session.App != a.Session.App {
-		t.Errorf("the freed slot %q was not reused; got %q", a.Session.App, c.Session.App)
+	// The released app's name must not come back: it was deleted with the
+	// session, and a name is never handed out twice.
+	if c.Session.App == a.Session.App {
+		t.Errorf("the released app %q was handed out again", a.Session.App)
 	}
 }
 
-// If minting the credential fails, the reserved slot must be given back, or the
-// environment would leak a slot per failed request until it looked full.
-func TestProvisionRollsBackTheSlotOnFailure(t *testing.T) {
+// If minting the credential fails, the recorded session must be given back, or
+// the environment would leak a place per failed request until it looked full.
+func TestProvisionRollsBackThePlaceOnFailure(t *testing.T) {
 	drv := &fakeDriver{ready: true, provisionErr: errors.New("boom")}
 	m, st := testManager(t, drv, testConfig())
 
@@ -180,13 +189,10 @@ func TestProvisionRollsBackTheSlotOnFailure(t *testing.T) {
 	if st.Total() != 0 {
 		t.Fatalf("a failed provision left %d sessions recorded", st.Total())
 	}
-	if got := st.OccupiedSlots("applab-1"); len(got) != 0 {
-		t.Fatalf("a failed provision left slots held: %v", got)
-	}
-	// The slot must be usable again.
+	// The place must be usable again.
 	drv.provisionErr = nil
 	if _, err := m.Provision(context.Background(), ProvisionRequest{Kind: model.KindApplab}, "2.2.2.2"); err != nil {
-		t.Fatalf("the slot was not recoverable: %v", err)
+		t.Fatalf("the place was not recoverable: %v", err)
 	}
 }
 

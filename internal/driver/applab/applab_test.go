@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/shaowenchen/labs/internal/driver"
 	"github.com/shaowenchen/labs/internal/model"
@@ -79,7 +80,10 @@ func (f *fakeAppLab) server(base string) *httptest.Server {
 			_, _ = w.Write([]byte(`{"error":"app already exists","retryable":false}`))
 			return
 		}
-		writeData(w, http.StatusCreated, map[string]any{"id": "lab-01", "app_key": "created-key"})
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		id, _ := body["id"].(string)
+		writeData(w, http.StatusCreated, map[string]any{"id": id, "app_key": "created-key"})
 	})
 	mux.HandleFunc("POST /api/v1/apps/{app}/key/rotate", func(w http.ResponseWriter, r *http.Request) {
 		f.record("rotate:" + r.PathValue("app"))
@@ -89,9 +93,9 @@ func (f *fakeAppLab) server(base string) *httptest.Server {
 		f.mu.Unlock()
 		writeData(w, http.StatusOK, map[string]any{"app_id": r.PathValue("app"), "key": key})
 	})
-	mux.HandleFunc("POST /api/v1/apps/{app}/stop", func(w http.ResponseWriter, r *http.Request) {
-		f.record("stop:" + r.PathValue("app"))
-		writeData(w, http.StatusOK, map[string]any{"stopped": r.PathValue("app")})
+	mux.HandleFunc("DELETE /api/v1/apps/{app}", func(w http.ResponseWriter, r *http.Request) {
+		f.record("delete:" + r.PathValue("app"))
+		writeData(w, http.StatusOK, map[string]any{"id": r.PathValue("app"), "deleted": true})
 	})
 	return httptest.NewServer(http.StripPrefix(base, mux))
 }
@@ -108,7 +112,6 @@ func testEnv(server string) model.Env {
 		Kind:     model.KindApplab,
 		Domain:   "applab-1.example.com",
 		BasePath: "/applab",
-		Slots:    []string{"lab-01", "lab-02"},
 		Capacity: 2,
 		APIKey:   "admin-key",
 	}
@@ -215,67 +218,82 @@ func TestReadyDoesNotSurfaceATunnelError(t *testing.T) {
 	}
 }
 
-func TestProvisionRotatesAndReturnsTheKey(t *testing.T) {
+func TestProvisionCreatesTheAppAndReturnsItsKey(t *testing.T) {
 	f := &fakeAppLab{}
 	srv := f.server("/applab")
 	defer srv.Close()
 	env := envWithURL(srv.URL, "/applab")
-	env.Slots = []string{"lab-01"}
 
-	got, err := newDriver(t).Provision(context.Background(), env, req("sess-1", "lab-01"))
+	got, err := newDriver(t).Provision(context.Background(), env, req("sess-1"))
 	if err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
-	if got.APIKey != "user-key-lab-01" {
-		t.Errorf("APIKey = %q, want the rotated key", got.APIKey)
+	// The name is minted from the session id, so it is `lab-` plus a prefix of
+	// that id and nothing is reused between sessions.
+	want := "lab-" + "sess-1"
+	if got.App != want {
+		t.Errorf("App = %q, want %q", got.App, want)
 	}
-	if got.App != "lab-01" {
-		t.Errorf("App = %q, want lab-01", got.App)
+	if got.APIKey != "user-key-"+want {
+		t.Errorf("APIKey = %q, want the rotated key", got.APIKey)
 	}
 	if got.ConsoleURL != env.BaseURL() {
 		t.Errorf("ConsoleURL = %q, want %q", got.ConsoleURL, env.BaseURL())
 	}
+	// The app must be created before its key is rotated: a rotate on an app that
+	// does not exist has nothing to rotate.
+	order := f.order()
+	if !contains(order, "create") {
+		t.Fatalf("Provision did not create the app: %v", order)
+	}
 }
 
-func TestEnsureSlotTreatsConflictAsSuccess(t *testing.T) {
+// A create that answers "already exists" is an error, not success: with a name
+// minted per session the only way to hit one is a collision with an app that
+// belongs to someone else.
+func TestProvisionRefusesAnAppNameCollision(t *testing.T) {
 	f := &fakeAppLab{conflict: true}
 	srv := f.server("/applab")
 	defer srv.Close()
 	env := envWithURL(srv.URL, "/applab")
 
-	if err := newDriver(t).EnsureSlot(context.Background(), env, "lab-01"); err != nil {
-		t.Fatalf("EnsureSlot should treat an existing app as success: %v", err)
+	_, err := newDriver(t).Provision(context.Background(), env, req("sess-1"))
+	if err == nil {
+		t.Fatal("Provision should fail when the app name already exists")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Errorf("error = %v, want it to name the collision", err)
 	}
 }
 
-// Release must rotate the key away before it stops the app. If it stopped first
-// and the stop failed, the caller would be left holding a working key — the
-// order is the point, so it is asserted.
-func TestReleaseRotatesBeforeStopping(t *testing.T) {
+// Release must rotate the key away before it deletes the app. If it deleted
+// first and the delete failed, the caller would be left holding a working key —
+// the order is the point, so it is asserted.
+func TestReleaseRotatesBeforeDeleting(t *testing.T) {
 	f := &fakeAppLab{}
 	srv := f.server("/applab")
 	defer srv.Close()
 	env := envWithURL(srv.URL, "/applab")
 
-	err := newDriver(t).Release(context.Background(), env, model.Session{App: "lab-01"})
+	err := newDriver(t).Release(context.Background(), env, model.Session{App: "lab-abc123"})
 	if err != nil {
 		t.Fatalf("Release: %v", err)
 	}
 	order := f.order()
-	var rotateAt, stopAt = -1, -1
+	var rotateAt, deleteAt = -1, -1
 	for i, c := range order {
 		switch {
 		case strings.HasPrefix(c, "rotate:"):
 			rotateAt = i
-		case strings.HasPrefix(c, "stop:"):
-			stopAt = i
+		case strings.HasPrefix(c, "delete:"):
+			deleteAt = i
 		}
 	}
-	if rotateAt < 0 || stopAt < 0 {
-		t.Fatalf("expected a rotate and a stop, got %v", order)
+	if rotateAt < 0 || deleteAt < 0 {
+		t.Fatalf("expected a rotate and a delete, got %v", order)
 	}
-	if rotateAt > stopAt {
-		t.Fatalf("rotate happened after stop: %v", order)
+	if rotateAt > deleteAt {
+		t.Fatalf("rotate happened after delete: %v", order)
 	}
 }
 
@@ -293,29 +311,56 @@ func TestReleaseWithNoAppIsANoOp(t *testing.T) {
 	}
 }
 
-func TestReconcileOnlyTouchesConfiguredSlots(t *testing.T) {
-	f := &fakeAppLab{}
+// Reconcile cleans up by prefix and by what the environment lists, not by a
+// configured set of names: an app the service made that nobody holds is
+// released, one it did not make is left alone.
+func TestReconcileOnlyTouchesAppsOfOurs(t *testing.T) {
+	f := &fakeAppLab{apps: []map[string]any{
+		{"id": "lab-live", "status": "created", "created_at": time.Now().Add(-time.Hour).Format(time.RFC3339)},
+		{"id": "lab-orphan", "status": "created", "created_at": time.Now().Add(-time.Hour).Format(time.RFC3339)},
+		{"id": "someone-elses", "status": "created", "created_at": time.Now().Add(-time.Hour).Format(time.RFC3339)},
+	}}
 	srv := f.server("/applab")
 	defer srv.Close()
 	env := envWithURL(srv.URL, "/applab")
-	env.Slots = []string{"lab-01", "lab-02"}
 
-	// lab-01 is live; lab-02 is not and must be released.
-	live := []model.Session{{App: "lab-01"}}
+	live := []model.Session{{App: "lab-live"}}
 	if err := newDriver(t).Reconcile(context.Background(), env, live); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	calls := f.order()
-	if contains(calls, "rotate:lab-01") {
-		t.Errorf("reconcile touched a live slot: %v", calls)
+	if contains(calls, "rotate:lab-live") {
+		t.Errorf("reconcile touched a live app: %v", calls)
 	}
-	if !contains(calls, "rotate:lab-02") {
-		t.Errorf("reconcile did not release the dead slot: %v", calls)
+	if contains(calls, "rotate:someone-elses") {
+		t.Errorf("reconcile touched an app it did not make: %v", calls)
+	}
+	if !contains(calls, "rotate:lab-orphan") {
+		t.Errorf("reconcile did not release an orphan: %v", calls)
 	}
 }
 
-func req(sessionID, app string) driver.ProvisionRequest {
-	return driver.ProvisionRequest{SessionID: sessionID, App: app}
+// An app younger than the grace period is spared: Provision creates it and the
+// session that holds it is recorded a moment later, so inside that window it is
+// an app nobody holds — and releasing it would take a lab away from its caller.
+func TestReconcileSparesAnAppInsideTheGraceWindow(t *testing.T) {
+	f := &fakeAppLab{apps: []map[string]any{
+		{"id": "lab-justmade", "status": "created", "created_at": time.Now().Format(time.RFC3339)},
+	}}
+	srv := f.server("/applab")
+	defer srv.Close()
+	env := envWithURL(srv.URL, "/applab")
+
+	if err := newDriver(t).Reconcile(context.Background(), env, nil); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if contains(f.order(), "rotate:lab-justmade") {
+		t.Errorf("reconcile released an app that was just created: %v", f.order())
+	}
+}
+
+func req(sessionID string) driver.ProvisionRequest {
+	return driver.ProvisionRequest{SessionID: sessionID}
 }
 
 func contains(list []string, want string) bool {
@@ -368,33 +413,30 @@ func TestLongErrorBodyIsShortened(t *testing.T) {
 	}
 }
 
-// Live reports every slot the environment has an app for, whatever the app's
-// state — a slot an earlier session held is not free again until its app is
-// gone, and the environment's own list is what says so. An app outside the
-// environment's own slots is left out, so a person's hand-made app does not
-// push the count past the capacity the slots define.
-func TestLiveReportsEverySlotTheEnvironmentHas(t *testing.T) {
+// Live reports every app of this service's, whatever the app's state, and is
+// scoped by the name prefix: an app someone made by hand with the shared key is
+// not one of ours and must not be counted.
+func TestLiveReportsEveryAppOfOurs(t *testing.T) {
 	f := &fakeAppLab{apps: []map[string]any{
-		{"id": "lab-01", "status": "created", "created_at": "2026-10-04T13:00:00Z"},
-		{"id": "lab-02", "status": "running", "created_at": "2026-10-04T13:05:00Z"},
+		{"id": "lab-9f2c1a3b", "status": "created", "created_at": "2026-10-04T13:00:00Z"},
+		{"id": "lab-4d7e8f01", "status": "running", "created_at": "2026-10-04T13:05:00Z"},
 		{"id": "someone-else", "status": "running", "created_at": "2026-10-04T13:06:00Z"},
 	}}
 	srv := f.server("/applab")
 	defer srv.Close()
 	env := envWithURL(srv.URL, "/applab")
-	env.Slots = []string{"lab-01", "lab-02"}
 
 	got, err := newDriver(t).Live(context.Background(), env)
 	if err != nil {
 		t.Fatalf("Live: %v", err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("Live = %+v, want both of the environment's slots", got)
+		t.Fatalf("Live = %+v, want both of this service's apps and not the hand-made one", got)
 	}
-	if got[0].ID != "lab-01" || got[0].State != "created" {
-		t.Errorf("Live[0] = %+v, want the idle slot with its state", got[0])
+	if got[0].ID != "lab-9f2c1a3b" || got[0].State != "created" {
+		t.Errorf("Live[0] = %+v, want its state", got[0])
 	}
-	if got[1].ID != "lab-02" || got[1].State != "running" || got[1].CreatedAt.IsZero() {
+	if got[1].ID != "lab-4d7e8f01" || got[1].State != "running" || got[1].CreatedAt.IsZero() {
 		t.Errorf("Live[1] = %+v, want its state and creation time", got[1])
 	}
 	// An applab app has no expiry of its own; the caller applies the session clock.
@@ -403,27 +445,25 @@ func TestLiveReportsEverySlotTheEnvironmentHas(t *testing.T) {
 	}
 }
 
-// Provision and Live must agree about a slot that was just handed out. Provision
+// Provision and Live must agree about an app that was just handed out. Provision
 // creates the app inert — auto_deploy is off, so applab reports it as "created"
 // until the caller pushes something into it — and Live is what the page draws
 // its rows from. Filtering "created" out of Live therefore made a lab vanish
 // from the list the instant it was created and only reappear if the caller
-// deployed into the slot, which is exactly backwards: the moment a caller has a
+// deployed into the app, which is exactly backwards: the moment a caller has a
 // lab is when they are looking for it.
-func TestProvisionedSlotIsVisibleToLive(t *testing.T) {
+func TestProvisionedAppIsVisibleToLive(t *testing.T) {
 	// What applab reports for an app that was created and nothing more, which is
-	// what Provision leaves behind: it creates the app with auto_deploy off, so
-	// nothing is behind it until the caller pushes something in.
+	// what Provision leaves behind.
 	f := &fakeAppLab{apps: []map[string]any{
-		{"id": "lab-01", "status": "created", "created_at": "2026-10-04T13:00:00Z"},
+		{"id": "lab-sess-1", "status": "created", "created_at": "2026-10-04T13:00:00Z"},
 	}}
 	srv := f.server("/applab")
 	defer srv.Close()
 	env := envWithURL(srv.URL, "/applab")
-	env.Slots = []string{"lab-01"}
 
 	d := newDriver(t)
-	if _, err := d.Provision(context.Background(), env, req("sess-1", "lab-01")); err != nil {
+	if _, err := d.Provision(context.Background(), env, req("sess-1")); err != nil {
 		t.Fatalf("Provision: %v", err)
 	}
 
@@ -431,7 +471,7 @@ func TestProvisionedSlotIsVisibleToLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Live: %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "lab-01" {
-		t.Fatalf("a just-provisioned slot is not in the list: %+v", got)
+	if len(got) != 1 || got[0].ID != "lab-sess-1" {
+		t.Fatalf("a just-provisioned app is not in the list: %+v", got)
 	}
 }

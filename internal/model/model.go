@@ -64,12 +64,10 @@ type Env struct {
 	// Template is the sandboxlab template a session creates. Ignored by applab.
 	Template string `json:"template,omitempty"`
 
-	// Slots are the app ids an applab environment lends out, one per concurrent
-	// session. Empty for sandboxlab, which is counted by Capacity instead.
-	Slots []string `json:"slots,omitempty"`
-
-	// Capacity is how many concurrent sessions this environment may serve. For
-	// applab it should equal len(Slots); it is authoritative for sandboxlab.
+	// Capacity is how many concurrent sessions this environment may serve. It is
+	// a count, not a set of names: the instance a session gets is minted per
+	// session by the driver — an applab app id or a sandboxlab sandbox id — and
+	// never comes from configuration.
 	Capacity int `json:"capacity"`
 
 	// APIKey is the environment's own key. applab uses it to mint a per-session
@@ -142,7 +140,8 @@ type Session struct {
 	// ConsoleURL is what the caller opens — the environment's console.
 	ConsoleURL string `json:"console_url"`
 
-	// App is the applab slot this session occupies, if any.
+	// App is the applab app id this session owns, minted for it when the lab was
+	// provisioned. Empty for sandboxlab.
 	App string `json:"app,omitempty"`
 
 	// SandboxID is the sandboxlab sandbox this session owns, if any.

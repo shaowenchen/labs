@@ -55,7 +55,7 @@ func testConfig() config.Config {
 		RateLimitWindow:  time.Hour,
 		Envs: []model.Env{{
 			ID: "applab-1", Kind: model.KindApplab, Domain: "a.example.com", BasePath: "/applab",
-			Slots: []string{"lab-01"}, Capacity: 1,
+			Capacity: 1,
 		}},
 	}
 }

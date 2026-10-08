@@ -64,12 +64,10 @@ const WrongDeployment = "the environment is not answering as expected"
 // ProvisionRequest is one session to mint, already authorized by the service's
 // own limits and already recorded in the store.
 type ProvisionRequest struct {
-	// SessionID is the id the service minted for this session. A driver may use
-	// it to name what it creates, so a sandbox or app traces back to a session.
+	// SessionID is the id the service minted for this session. A driver uses it
+	// to name what it creates — an applab app or a sandboxlab sandbox — so the
+	// instance traces back to the session that owns it.
 	SessionID string
-
-	// App is the applab slot reserved for this session. Empty for sandboxlab.
-	App string
 
 	// Template is the template the caller chose, for a kind that offers a choice
 	// of them. Empty means "the environment's own default", which is what a
@@ -87,7 +85,8 @@ type Provisioned struct {
 	// to be handed to the caller and is never written to the store.
 	APIKey string
 
-	// App is the applab slot used, if any.
+	// App is the applab app id, minted by the driver for this session. Empty for
+	// sandboxlab.
 	App string
 
 	// SandboxID is the sandboxlab sandbox created, if any.
@@ -146,20 +145,14 @@ type Driver interface {
 	Ready(ctx context.Context, env model.Env) (Ready, error)
 
 	// Provision mints one session's credential and returns where to send the
-	// caller. It is called only after the service has reserved a slot, so a
-	// driver may assume capacity exists.
+	// caller. It is called only after the service has taken a place in the
+	// environment, so a driver may assume capacity exists.
 	Provision(ctx context.Context, env model.Env, req ProvisionRequest) (Provisioned, error)
 
 	// Release ends a session: it revokes the credential and stops whatever the
 	// session was using. It must be idempotent — the explicit delete and the
 	// reaper both call it, and either may run first.
 	Release(ctx context.Context, env model.Env, sess model.Session) error
-
-	// EnsureSlot makes sure the given applab slot exists as a record, so that a
-	// later Provision has something to rotate a key for. It is a no-op for a
-	// kind without slots. It is called at warm-up rather than per request so
-	// that the request path stays fast.
-	EnsureSlot(ctx context.Context, env model.Env, app string) error
 
 	// Choices lists the templates a caller may pick from, for a kind that offers
 	// a choice of them. A kind that offers none returns nil and no error, which

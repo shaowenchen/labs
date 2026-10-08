@@ -50,26 +50,27 @@ something.
 
 ```
 caller ──POST /api/v1/labs──▶ labs
-                               │  reserve a free slot in the environment (starting one if none is up)
-                               │  rotate that slot's app key  ──▶ applab  (admin key)
+                               │  take a place in the environment (starting one if none is up)
+                               │  mint an app named after the session, rotate its key  ──▶ applab  (admin key)
                                ▼
                           { console_url, api_key, expires_at }  ──▶ the caller
                                │
             2h later, reaper ──┘  rotate the key away ──▶ applab
-                                  stop the app, free the slot
+                                  delete the app, give the place back
 ```
 
 The credential is the interesting part. applab issues a **per-app key** that
 reaches exactly one app, and rotating it invalidates the previous value
-immediately. So a session's key is a freshly rotated key for the slot it holds,
+immediately. So a session's key is a freshly rotated key for the app it owns,
 and ending a session is another rotation. No two callers ever hold the same key,
-and the rotation happens *before* the app is stopped — so even if the teardown
+and the rotation happens *before* the app is deleted — so even if the teardown
 half fails, no one is left holding a working credential.
 
-The slot is a named app id from the environment's configuration. Reserving one
-happens under the same lock that records the session, so two requests arriving
-together take two different slots, and a request that fails to mint a key gives
-its slot back rather than leaking it.
+The app is named per session — `lab-` and a prefix of the session id — so its
+name is never reused and never comes from configuration. Taking a place in the
+environment happens under the same lock that records the session, so two requests
+arriving together cannot both take the last one, and a request that fails to mint
+a key gives its place back rather than leaking it.
 
 ## Starting an environment, on demand
 
@@ -314,10 +315,11 @@ no volume.
 Session state is in memory, and deliberately so — a lab is disposable and lasts
 two hours, so the service keeps only what it needs to expire and free what it
 handed out. Two consequences are worth knowing. A restart forgets the live
-sessions, which is the safe direction: reconciliation then rotates every
-outstanding credential away, so a restart can cut a lab short but cannot leave
-one working. And the state is per-process, so the service runs **one replica**;
-two would each hold half the sessions and hand the same slot out twice.
+sessions, which is the safe direction: reconciliation then sees every app it made
+as unheld and deletes it, revoking the credential with it — so a restart can cut
+a lab short, source and all, but cannot leave one working. And the state is
+per-process, so the service runs **one replica**; two would each see the other's
+live apps as unheld and delete them.
 
 Without docker:
 
@@ -397,9 +399,9 @@ It is one long-lived process, and two of its properties do not survive a platfor
 that runs several instances and starts them cold:
 
 - **The session store is in memory.** Two instances hold two different halves of
-  the sessions, so two callers arriving on different instances can be handed the
-  same applab slot and the same key. The concurrent-session caps are enforced
-  against that same store, so they are per-instance too.
+  the sessions, so each one's reconciliation sees the other's live apps as
+  unheld and deletes them — with their source. The concurrent-session caps are
+  enforced against that same store, so they are per-instance too.
 - **The reaper does not run.** It is a goroutine the process owns, and a process
   started per request has no life to own one. Expiry is then left to the
   environments: sandboxlab reaps its own sandboxes, but applab's keys do not
@@ -428,7 +430,7 @@ API. What they pin down is the behaviour that is expensive to get wrong:
 
 - a run already queued or in progress is used as it is, never dispatched over
   (a second dispatch would replace it, wedging the environment);
-- a failed provision gives its slot back;
+- a failed provision gives its place back;
 - a restart forgets every live session, so reconciliation rotates them all away
   rather than leaving a credential working;
 - `GET` never returns a key, and `DELETE` is idempotent.

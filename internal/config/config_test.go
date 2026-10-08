@@ -129,11 +129,8 @@ func TestRepositoryBecomesAnEnvironment(t *testing.T) {
 	if got := e.DispatchInputs("4")["api_key"]; got != testKey {
 		t.Errorf("dispatch api_key = %q, want the configured key", got)
 	}
-	if e.Capacity != defaultEnvSlots || len(e.Slots) != defaultEnvSlots {
-		t.Errorf("capacity = %d, slots = %d, want %d of each", e.Capacity, len(e.Slots), defaultEnvSlots)
-	}
-	if e.Capacity != len(e.Slots) {
-		t.Errorf("capacity %d and slots %d must match for applab", e.Capacity, len(e.Slots))
+	if e.Capacity != defaultEnvSlots {
+		t.Errorf("capacity = %d, want %d", e.Capacity, defaultEnvSlots)
 	}
 }
 
@@ -245,25 +242,6 @@ func TestDispatchInputsCarryTheDomain(t *testing.T) {
 	}
 	if inputs["tunnel"] != "cloudflare" {
 		t.Errorf("dispatch tunnel = %q, want cloudflare", inputs["tunnel"])
-	}
-}
-
-func TestLabSlots(t *testing.T) {
-	cases := map[int][]string{
-		0: nil,
-		1: {"lab-01"},
-		4: {"lab-01", "lab-02", "lab-03", "lab-04"},
-	}
-	for n, want := range cases {
-		got := slotNames(n)
-		if len(got) != len(want) {
-			t.Fatalf("slotNames(%d) = %v, want %v", n, got, want)
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Errorf("slotNames(%d)[%d] = %q, want %q", n, i, got[i], want[i])
-			}
-		}
 	}
 }
 
@@ -445,8 +423,8 @@ func TestAllProblemsAreReportedTogether(t *testing.T) {
 func TestEnvSlotsOverride(t *testing.T) {
 	setEnv(t, map[string]string{"LABS_ENV_SLOTS": "2"})
 	cfg := mustLoad(t)
-	if cfg.Envs[0].Capacity != 2 || len(cfg.Envs[0].Slots) != 2 {
-		t.Fatalf("LABS_ENV_SLOTS=2 gave capacity %d and %d slots", cfg.Envs[0].Capacity, len(cfg.Envs[0].Slots))
+	if cfg.Envs[0].Capacity != 2 {
+		t.Fatalf("LABS_ENV_SLOTS=2 gave capacity %d", cfg.Envs[0].Capacity)
 	}
 }
 

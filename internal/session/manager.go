@@ -2,11 +2,12 @@
 // again.
 //
 // It is the only place that knows the order of the three things provisioning
-// takes — reserve a slot, mint a credential, record the address — and the whole
-// reason that order is written down once is that each step can fail and the
-// steps before it must be undone. Reserving before minting is what makes two
-// requests arriving together take different slots; recording after minting is
-// what makes a crash in between leave a slot that Reconcile can find and clear.
+// takes — take a place in the environment, mint a credential, record the address
+// — and the whole reason that order is written down once is that each step can
+// fail and the steps before it must be undone. Taking the place before minting is
+// what makes two requests arriving together not both take the last one; recording
+// after minting is what makes a crash in between leave a session that Reconcile
+// can find and clear.
 package session
 
 import (
@@ -249,11 +250,11 @@ func (m *Manager) ChoicesFor(ctx context.Context, kind model.Kind) []driver.Choi
 	return nil
 }
 
-// checkTemplate refuses a template this kind does not offer, before any slot is
-// reserved or credential minted.
+// checkTemplate refuses a template this kind does not offer, before a place is
+// taken or a credential minted.
 //
 // The check happens here rather than only in the driver because by the time the
-// driver sees the request a slot has been claimed and a session recorded, and a
+// driver sees the request a place has been taken and a session recorded, and a
 // bad template would have to be unwound. Asking first also lets the refusal name
 // the templates that do exist.
 func (m *Manager) checkTemplate(ctx context.Context, req ProvisionRequest) error {
@@ -290,7 +291,7 @@ func (m *Manager) provisionPass(ctx context.Context, req ProvisionRequest, clien
 	var limitErr error
 
 	// A template this deployment does not offer is refused before anything is
-	// claimed, so a typo costs a request rather than a slot.
+	// claimed, so a typo costs a request rather than a place.
 	if err := m.checkTemplate(ctx, req); err != nil {
 		return Result{}, err, false
 	}
@@ -325,7 +326,7 @@ func (m *Manager) provisionPass(ctx context.Context, req ProvisionRequest, clien
 			ExpiresAt: now.Add(m.cfg.SessionTTL),
 		}
 
-		app, err := m.store.Reserve(env, sess, lim)
+		err := m.store.Reserve(env, sess, lim)
 		switch {
 		case errors.Is(err, store.ErrNoSlot):
 			// This environment is full; another may not be.
@@ -338,20 +339,18 @@ func (m *Manager) provisionPass(ctx context.Context, req ProvisionRequest, clien
 			}
 			continue
 		case err != nil:
-			return Result{}, fmt.Errorf("reserve a slot in %s: %w", env.ID, err), false
+			return Result{}, fmt.Errorf("record a session in %s: %w", env.ID, err), false
 		}
 
-		sess.App = app
 		prov, err := drv.Provision(ctx, env, driver.ProvisionRequest{
 			SessionID: sess.ID,
-			App:       app,
 			Template:  req.Template,
 		})
 		if err != nil {
-			// Give the slot back. The session never reached the caller, so
+			// Give the place back. The session never reached the caller, so
 			// nothing else will ever release it.
 			if dropErr := m.store.Drop(sess.ID); dropErr != nil {
-				m.log.Warn("could not release a slot after a failed provision", "env", env.ID, "session", sess.ID, "error", dropErr)
+				m.log.Warn("could not release a session after a failed provision", "env", env.ID, "session", sess.ID, "error", dropErr)
 			}
 			return Result{}, fmt.Errorf("provision in %s: %w", env.ID, err), false
 		}
@@ -531,10 +530,9 @@ func (m *Manager) Status(ctx context.Context) []EnvStatus {
 }
 
 // occupied is how many instances an environment is running, taken from the
-// environment's own list — an applab slot it has an app for, a sandboxlab
-// sandbox it has running. That list is what the page also shows beneath the
-// number, so the count and the rows under it are the same source and cannot
-// disagree.
+// environment's own list — an applab app or a sandboxlab sandbox. That list is
+// what the page also shows beneath the number, so the count and the rows under
+// it are the same source and cannot disagree.
 //
 // The service's own record is the fallback only when the environment cannot be
 // read at all: then the list is empty for the wrong reason, and a stale number
@@ -552,13 +550,12 @@ func (m *Manager) occupied(ctx context.Context, env model.Env) int {
 	return len(live)
 }
 
-// recorded is the fallback count, from this service's own store: applab's named
-// slots, or sandboxlab's live sessions.
+// recorded is the fallback count, from this service's own store: the sessions
+// recorded for this environment. It is the same number the driver's list gives
+// when the environment can be read — both are "what this environment is
+// carrying" — so it is only used when the environment cannot be reached.
 func (m *Manager) recorded(env model.Env) int {
-	if env.Kind == model.KindSandboxlab {
-		return len(m.liveFor(env.ID))
-	}
-	return len(m.store.OccupiedSlots(env.ID))
+	return len(m.liveFor(env.ID))
 }
 
 // LiveLabs is what an environment is running, for the page. It is the driver's

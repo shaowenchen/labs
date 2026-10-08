@@ -2,10 +2,13 @@
 //
 // The shape it exploits is AppLab's per-app key. An app key reaches exactly one
 // app and nothing else, and rotating it invalidates the previous value at once —
-// so a session's credential is a freshly rotated key for the slot it holds, and
+// so a session's credential is a freshly rotated key for the app it owns, and
 // ending the session is another rotation. That is a real per-session credential,
 // which is why applab is the kind that fits "hand over a link" with nothing
 // shared between callers.
+//
+// Each session's app is named after the session — `lab-` and a prefix of its id
+// — so an app id is never reused and never comes from configuration.
 //
 // The deployment's own admin key is what performs the rotations. It is held in
 // the environment's config and never reaches a caller.
@@ -31,6 +34,10 @@ import (
 type Driver struct {
 	hc  *http.Client
 	log *slog.Logger
+
+	// now is the clock Reconcile compares an app's age against. It is a field so
+	// a test can place an app's creation in the past without waiting.
+	now func() time.Time
 }
 
 // New returns an applab driver.
@@ -38,6 +45,7 @@ func New(log *slog.Logger) *Driver {
 	return &Driver{
 		hc:  &http.Client{Timeout: 30 * time.Second},
 		log: log,
+		now: time.Now,
 	}
 }
 
@@ -129,38 +137,61 @@ func (d *Driver) healthy(ctx context.Context, env model.Env) error {
 	return firstErr
 }
 
-// EnsureSlot makes sure an app record exists for the slot, so a later Provision
-// has something to rotate a key for.
+// appPrefix is what this service names its apps, so Reconcile can tell its own
+// from anyone else's.
+const appPrefix = "lab-"
+
+// reconcileGrace is how long an app this service named is left alone before
+// Reconcile will delete it as an orphan. It has to be longer than the gap
+// between Provision creating the app and the session that holds it being
+// recorded — one HTTP round trip — because inside that gap the app is real and
+// unheld, and deleting it would take a lab away from the caller it is being made
+// for. Minutes rather than seconds, since nobody is waiting on the cleanup.
+const reconcileGrace = 2 * time.Minute
+
+// appName is a cluster-safe app id for a session's app. applab requires the id
+// to be lowercase letters, digits and '-', which the session id already is.
 //
-// The app is created inert — no auto-deploy — because it is a slot, not a
-// deployment: it becomes real when a session pushes something into it. A create
-// that answers "already exists" is success, which is what makes this safe to run
-// on every warm-up.
-func (d *Driver) EnsureSlot(ctx context.Context, env model.Env, app string) error {
-	if app == "" {
-		return nil
+// Twelve hex characters rather than sandboxlab's eight, and deliberately: a
+// collision here is not the same failure. sandboxlab's name goes to a create
+// that fails on a duplicate, so a collision there costs one session. This name
+// is the handle an app is then managed by, and a collision would mean creating
+// an app that already belongs to a live session. Twelve characters is 48 bits,
+// which puts a collision out of reach for a service that holds a handful of
+// sessions at a time.
+func appName(sessionID string) string {
+	short := sessionID
+	if len(short) > 12 {
+		short = short[:12]
 	}
-	body := map[string]any{"id": app, "name": app, "auto_deploy": false}
-	err := d.call(ctx, env, http.MethodPost, "/api/v1/apps", env.APIKey, body, nil, true)
-	if err != nil && isAlreadyExists(err) {
-		return nil
-	}
-	return err
+	return appPrefix + short
 }
 
-// Provision rotates the slot's key and returns the fresh value as the caller's
+// Provision mints a session's app and returns a fresh key for it as the caller's
 // credential.
 //
-// Rotating is a create when the app has no key yet, so a slot that lost its key
-// recovers here rather than failing. The address delivered is the environment's
-// console, where the caller pastes the key.
+// The app id is minted here rather than configured: it is per session and never
+// reused, so nothing accumulates under one name and two sessions can never be
+// confused for one another. The app is created inert — no auto-deploy — because
+// it is a place to put an application, not a deployment: it becomes real when
+// the session pushes something into it. A create that answers "already exists"
+// is an error rather than success, because with a fresh id per session the only
+// way to get one is a collision with an app that belongs to someone else.
+//
+// The address delivered is the environment's console, where the caller pastes
+// the key.
 func (d *Driver) Provision(ctx context.Context, env model.Env, req driver.ProvisionRequest) (driver.Provisioned, error) {
-	app := req.App
-	if app == "" {
-		return driver.Provisioned{}, fmt.Errorf("applab: a session needs an app slot, but none was given")
+	if req.SessionID == "" {
+		return driver.Provisioned{}, fmt.Errorf("applab: a session needs an id to name its app after, but none was given")
 	}
-	if err := d.EnsureSlot(ctx, env, app); err != nil {
-		return driver.Provisioned{}, fmt.Errorf("applab: ensure slot %q: %w", app, err)
+	app := appName(req.SessionID)
+
+	body := map[string]any{"id": app, "name": app, "auto_deploy": false}
+	if err := d.call(ctx, env, http.MethodPost, "/api/v1/apps", env.APIKey, body, nil, false); err != nil {
+		if isAlreadyExists(err) {
+			return driver.Provisioned{}, fmt.Errorf("applab: an app named %q already exists, which a fresh name should never hit", app)
+		}
+		return driver.Provisioned{}, fmt.Errorf("applab: create app %q: %w", app, err)
 	}
 
 	var out struct {
@@ -183,13 +214,18 @@ func (d *Driver) Provision(ctx context.Context, env model.Env, req driver.Provis
 }
 
 // Release ends a session: the key is rotated away first, then the app is
-// stopped.
+// deleted with everything applab recorded for it.
 //
 // The order is the point. Rotating immediately invalidates the credential the
-// caller holds, so even if stopping the app then fails — the cluster is
-// unreachable, the run is being torn down — no one is left holding a working
-// key. The reverse order would leave a live credential behind exactly when the
-// teardown was going badly, which is the case that matters.
+// caller holds, so even if the delete then fails — the cluster is unreachable,
+// the run is being torn down — no one is left holding a working key. The reverse
+// order would leave a live credential behind exactly when the teardown was going
+// badly, which is the case that matters.
+//
+// The delete is what keeps the app list from growing without bound: the id is
+// minted per session and never reused, so an app left behind is one no future
+// session will ever take over. It removes the app's cluster objects, its source
+// and its credential in one call.
 func (d *Driver) Release(ctx context.Context, env model.Env, sess model.Session) error {
 	app := sess.App
 	if app == "" {
@@ -204,26 +240,30 @@ func (d *Driver) Release(ctx context.Context, env model.Env, sess model.Session)
 		return fmt.Errorf("applab: rotate key for %q: %w", app, err)
 	}
 
-	stopPath := "/api/v1/apps/" + url.PathEscape(app) + "/stop"
-	if err := d.call(ctx, env, http.MethodPost, stopPath, env.APIKey, nil, nil, true); err != nil && !isNotFound(err) {
+	deletePath := "/api/v1/apps/" + url.PathEscape(app)
+	if err := d.call(ctx, env, http.MethodDelete, deletePath, env.APIKey, nil, nil, true); err != nil && !isNotFound(err) {
 		// The credential is already dead, so this is a cleanup failure rather
 		// than a security one. Downgraded to a warning.
-		d.log.Warn("could not stop a released session's app", "env", env.ID, "app", app, "error", err)
+		d.log.Warn("could not delete a released session's app", "env", env.ID, "app", app, "error", err)
 	}
 
 	d.log.Info("released an applab session", "env", env.ID, "app", app)
 	return nil
 }
 
-// Live lists the slots the environment has an app for, in use and idle alike.
-// It is scoped to the configured slots — an app a person made by hand is not
-// this service's to report — and reads the state from the environment, so it
-// reflects what is there rather than what this service last recorded.
+// Live lists the apps this service has in the environment, in use and idle
+// alike. It reads the state from the environment, so it reflects what is there
+// rather than what this service last recorded.
 //
-// Every slot the environment lists is one of this service's, and the count is
-// that list: a slot an earlier session held is not free again until its app is
-// gone, whatever the app's own state says. The state is still carried out on
-// each entry for whoever wants to read it.
+// It is scoped by the app-name prefix: an app carrying this service's prefix was
+// made by it, and one that does not belongs to someone else and is not reported.
+// The same prefix is what Reconcile cleans up by, so the two agree on what is
+// ours.
+//
+// Every app listed is one of this service's and counts as in use, whatever the
+// app's own state says: an app recorded but not yet deployed — the state right
+// after a lab is handed out, before anything is pushed into it — is still an app
+// this service made and must account for.
 //
 // No key is read or returned: the key is a separate route (/key), and a listing
 // that carried it would hand out a credential per row. ExpiresAt is left zero —
@@ -241,22 +281,9 @@ func (d *Driver) Live(ctx context.Context, env model.Env) ([]driver.Live, error)
 		return nil, fmt.Errorf("applab: list apps: %w", err)
 	}
 
-	// Every app in one of this environment's own slots counts as in use. The
-	// slot filter keeps an app a person made by hand from being counted as one
-	// of ours, and therefore from pushing the count past the capacity the slots
-	// define.
-	//
-	// The app's status is deliberately not consulted. A slot whose app is
-	// recorded but not yet deployed — the state right after a lab is handed out,
-	// before anything is pushed into it — is in use, and an app record is what
-	// the environment itself says it has.
-	want := map[string]bool{}
-	for _, slot := range env.Slots {
-		want[slot] = true
-	}
 	live := make([]driver.Live, 0, len(apps))
 	for _, a := range apps {
-		if !want[a.ID] {
+		if !strings.HasPrefix(a.ID, appPrefix) {
 			continue
 		}
 		live = append(live, driver.Live{ID: a.ID, State: a.Status, CreatedAt: a.CreatedAt})
@@ -264,15 +291,17 @@ func (d *Driver) Live(ctx context.Context, env model.Env) ([]driver.Live, error)
 	return live, nil
 }
 
-// Choices is nil: applab hands out a named application slot and there is nothing
-// about it to pick. A lab there is the slot plus a key, and the slot is this
-// service's to allocate rather than the caller's to choose.
+// Choices is nil: applab hands out an app of this service's own naming and there
+// is nothing about it to pick. A lab there is the app plus a key, and the app is
+// this service's to name rather than the caller's to choose.
 func (d *Driver) Choices(context.Context, model.Env) ([]driver.Choice, error) { return nil, nil }
 
-// Reconcile rotates and stops every slot app that no live session holds.
+// Reconcile deletes every app of this service's that no live session holds.
 //
-// It considers only the environment's configured slots: an app a person created
-// by hand is not this service's to clean up, and touching it would make the
+// It lists the environment rather than iterating a configured set: the names are
+// minted per session, so the only way to know what exists is to ask. Only apps
+// carrying this service's prefix are touched — an app a person created by hand
+// is not this service's to clean up, and touching it would make the
 // reconciliation the thing that causes the outage.
 func (d *Driver) Reconcile(ctx context.Context, env model.Env, live []model.Session) error {
 	held := map[string]bool{}
@@ -281,12 +310,32 @@ func (d *Driver) Reconcile(ctx context.Context, env model.Env, live []model.Sess
 			held[s.App] = true
 		}
 	}
+
+	var apps []struct {
+		ID        string    `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+	}
+	if err := d.call(ctx, env, http.MethodGet, "/api/v1/apps", env.APIKey, nil, &apps, false); err != nil {
+		return fmt.Errorf("applab: list apps: %w", err)
+	}
+
 	var firstErr error
-	for _, app := range env.Slots {
-		if held[app] {
+	for _, a := range apps {
+		if held[a.ID] || !strings.HasPrefix(a.ID, appPrefix) {
 			continue
 		}
-		if err := d.Release(ctx, env, model.Session{App: app}); err != nil && firstErr == nil {
+		// An app younger than the grace period is one this process may be
+		// mid-way through handing out: Provision creates it and the session that
+		// will hold it is recorded a moment later, so between the two it is an
+		// app nobody holds. Releasing it there would delete a lab that is on its
+		// way to a caller — and, unlike the key rotation this used to be, the
+		// delete takes the source with it. Waiting costs an orphan a few minutes;
+		// not waiting costs a caller their work. An app left by a restart is
+		// hours old and is still cleaned up.
+		if !a.CreatedAt.IsZero() && d.now().Sub(a.CreatedAt) < reconcileGrace {
+			continue
+		}
+		if err := d.Release(ctx, env, model.Session{App: a.ID}); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

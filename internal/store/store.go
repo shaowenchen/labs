@@ -40,8 +40,9 @@ var (
 	// random id and therefore a bug worth surfacing rather than overwriting.
 	ErrExists = errors.New("store: session already exists")
 
-	// ErrNoSlot is an applab environment with no free app slot.
-	ErrNoSlot = errors.New("store: no free slot in the environment")
+	// ErrNoSlot is an environment with no capacity left: it is already carrying
+	// as many concurrent sessions as it may.
+	ErrNoSlot = errors.New("store: the environment is full")
 
 	// ErrAtCapacity is the global concurrent-session cap being reached.
 	ErrAtCapacity = errors.New("store: at capacity")
@@ -62,16 +63,11 @@ type Limits struct {
 type Store struct {
 	mu       sync.Mutex
 	sessions []model.Session
-
-	// slots maps an environment id to its app ids and the session occupying
-	// each, so slot occupancy and the session list cannot disagree: they are
-	// updated under one lock.
-	slots map[string]map[string]string
 }
 
 // New returns an empty store.
 func New() *Store {
-	return &Store{slots: map[string]map[string]string{}}
+	return &Store{}
 }
 
 // Sessions returns every recorded session, newest first.
@@ -126,40 +122,29 @@ func (s *Store) Total() int {
 	return len(s.sessions)
 }
 
-// OccupiedSlots returns the app ids an applab environment currently has in use,
-// mapped to the session holding each. It is what Reconcile compares against.
-func (s *Store) OccupiedSlots(envID string) map[string]string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := map[string]string{}
-	for app, sessID := range s.slots[envID] {
-		out[app] = sessID
-	}
-	return out
-}
-
-// Reserve claims a session slot and records the session, all under one lock, so
-// that the limit it checks and the slot it claims cannot be raced apart by two
-// requests arriving together.
+// Reserve records the session, all under one lock, so that the limits it checks
+// and the record it writes cannot be raced apart by two requests arriving
+// together.
 //
-// For an applab environment the slot is a named app id from env.Slots; the
-// claimed one is returned and recorded against the session. sandboxlab
-// environments are not slotted, only counted, and Reserve returns "".
+// Capacity is per environment and is a count, not a pool: an applab environment
+// serves at most env.Capacity concurrent sessions, and the instance each one
+// gets is minted by the driver afterwards. An environment with no room left is
+// ErrNoSlot, which the caller reads as "try another environment of this kind".
 //
 // The session is recorded with whatever fields the caller has already filled in
 // — id, env, address, times — and ConsoleURL empty, because the address is not
 // known until the driver has minted the credential. Complete fills it in.
-func (s *Store) Reserve(env model.Env, sess model.Session, lim Limits) (string, error) {
+func (s *Store) Reserve(env model.Env, sess model.Session, lim Limits) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	for _, existing := range s.sessions {
 		if existing.ID == sess.ID {
-			return "", ErrExists
+			return ErrExists
 		}
 	}
 	if lim.MaxTotal > 0 && len(s.sessions) >= lim.MaxTotal {
-		return "", ErrAtCapacity
+		return ErrAtCapacity
 	}
 	if lim.MaxPerIP > 0 {
 		n := 0
@@ -169,26 +154,29 @@ func (s *Store) Reserve(env model.Env, sess model.Session, lim Limits) (string, 
 			}
 		}
 		if n >= lim.MaxPerIP {
-			return "", ErrIPLimit
+			return ErrIPLimit
 		}
 	}
 
-	app := ""
-	if env.Kind == model.KindApplab {
-		app = s.freeSlot(env)
-		if app == "" {
-			return "", ErrNoSlot
+	// Counted rather than looked up in a name pool: this environment's own
+	// sessions are what it is carrying, and the check sits inside the same lock
+	// as the append so two arrivals cannot both see room for the last place.
+	// applab only — a sandboxlab environment is capped by the global limit
+	// alone, which is what it has always been.
+	if env.Kind == model.KindApplab && env.Capacity > 0 {
+		n := 0
+		for _, existing := range s.sessions {
+			if existing.EnvID == env.ID {
+				n++
+			}
+		}
+		if n >= env.Capacity {
+			return ErrNoSlot
 		}
 	}
 
 	s.sessions = append(s.sessions, sess)
-	if app != "" {
-		if s.slots[env.ID] == nil {
-			s.slots[env.ID] = map[string]string{}
-		}
-		s.slots[env.ID][app] = sess.ID
-	}
-	return app, nil
+	return nil
 }
 
 // Complete records the address and details a driver minted for a session.
@@ -219,10 +207,13 @@ func (s *Store) Complete(id, consoleURL, app, sandboxID, template string) error 
 	return ErrNotFound
 }
 
-// Drop removes a session and frees any slot it held. It is idempotent: dropping
-// a session that is already gone is success, because the caller's intent —
-// "this session must not exist" — is satisfied either way, and the explicit
-// delete and the reaper routinely race to be the one that drops it.
+// Drop removes a session. It is idempotent: dropping a session that is already
+// gone is success, because the caller's intent — "this session must not exist" —
+// is satisfied either way, and the explicit delete and the reaper routinely race
+// to be the one that drops it.
+//
+// Removing it also gives the environment its capacity back, since capacity is
+// counted from this list.
 func (s *Store) Drop(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -240,29 +231,7 @@ func (s *Store) Drop(id string) error {
 		return nil
 	}
 	s.sessions = kept
-	for envID, slots := range s.slots {
-		for app, sessID := range slots {
-			if sessID == id {
-				delete(slots, app)
-			}
-		}
-		if len(slots) == 0 {
-			delete(s.slots, envID)
-		}
-	}
 	return nil
-}
-
-// freeSlot returns a free app id for an applab environment, or "" if none is
-// free. Callers hold the lock.
-func (s *Store) freeSlot(env model.Env) string {
-	used := s.slots[env.ID]
-	for _, app := range env.Slots {
-		if _, taken := used[app]; !taken {
-			return app
-		}
-	}
-	return ""
 }
 
 // snapshot copies the session list for a caller to read outside the lock, newest

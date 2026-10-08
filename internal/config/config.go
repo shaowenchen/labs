@@ -115,8 +115,10 @@ type Config struct {
 	// fewer kinds than expected can see which variable decided that.
 	ReposSource map[string]string
 
-	// EnvSlots is how many concurrent sessions each environment serves, which
-	// is the number of app ids it lends out. It applies to every environment.
+	// EnvSlots is how many concurrent sessions each environment serves. It
+	// applies to every environment. The name is a holdover from when an applab
+	// environment lent out a fixed pool of app ids of this size; the ids are
+	// minted per session now, so this is a count.
 	EnvSlots int
 
 	// DomainSuffix is the domain environments are served under, as a bare
@@ -305,7 +307,7 @@ func (c Config) Validate() []string {
 		add("LABS_DISPATCH_SESSION_HOURS is %q, but the workflow declares it as a choice of 1, 2, 4 or unlimited", c.DispatchSessionHours)
 	}
 	if c.EnvSlots <= 0 {
-		add("LABS_ENV_SLOTS is %d, but each environment needs at least one slot", c.EnvSlots)
+		add("LABS_ENV_SLOTS is %d, but each environment must serve at least one session", c.EnvSlots)
 	}
 
 	// Ids come from repository names, so two repositories with the same name
@@ -334,14 +336,6 @@ func (c Config) validateEnv(e model.Env) []string {
 		add("environment %q has domain %q, which must be a bare hostname with no scheme or path (or leave it out and let the address be read from the environment's own run log)", e.ID, e.Domain)
 	case e.Capacity <= 0:
 		add("environment %q has capacity %d, which must be positive", e.ID, e.Capacity)
-	}
-
-	if e.Kind == model.KindApplab {
-		if len(e.Slots) == 0 {
-			add("environment %q is an applab environment with no slots: set LABS_ENV_SLOTS to at least 1", e.ID)
-		} else if e.Capacity != len(e.Slots) {
-			add("environment %q has capacity %d but %d slots; for applab they are the same number", e.ID, e.Capacity, len(e.Slots))
-		}
 	}
 	return problems
 }
@@ -375,9 +369,10 @@ func (c Config) EnvByID(id string) (model.Env, bool) {
 }
 
 // defaultEnvSlots is how many concurrent sessions each environment serves when
-// LABS_ENV_SLOTS does not say: eight app slots, which is how many applications
-// one applab cluster is expected to carry at once. Each one is a running app in
-// the cluster, so raising it raises what the cluster holds.
+// LABS_ENV_SLOTS does not say: eight, which is how many applications one applab
+// cluster is expected to carry at once. The name is left over from when this was
+// a pool of pre-made app ids; it is a count of concurrent sessions now, which is
+// what it always meant to an operator.
 const defaultEnvSlots = 8
 
 // basePathFor is the path a project's whole deployment is served under by
@@ -441,7 +436,7 @@ type envSpec struct {
 // what leaving ADMIN_KEY unset asks for. It is resolved here, once, rather than
 // per request so that the dispatch and the calls that follow it agree on the
 // same value, whether that value is a key or nothing.
-func buildEnvs(specs []envSpec, slots int, domainSuffix, ref, sharedKey string) []model.Env {
+func buildEnvs(specs []envSpec, capacity int, domainSuffix, ref, sharedKey string) []model.Env {
 	envs := make([]model.Env, 0, len(specs))
 	for _, spec := range specs {
 		kind, repo := spec.kind, spec.repo
@@ -476,8 +471,7 @@ func buildEnvs(specs []envSpec, slots int, domainSuffix, ref, sharedKey string) 
 			Domain:   domain,
 			BasePath: basePath,
 			Template: strings.TrimSpace(os.Getenv("LABS_TEMPLATE_" + id)),
-			Slots:    slotNames(slots),
-			Capacity: slots,
+			Capacity: capacity,
 			APIKey:   strings.TrimSpace(os.Getenv("LABS_KEY_" + id)),
 		}
 		if env.APIKey == "" {
@@ -523,18 +517,6 @@ func envID(name string) string {
 		}
 	}
 	return b.String()
-}
-
-// slotNames is the app ids an environment lends out: lab-01, lab-02, ...
-func slotNames(n int) []string {
-	if n < 0 {
-		n = 0
-	}
-	out := make([]string, 0, n)
-	for i := 1; i <= n; i++ {
-		out = append(out, fmt.Sprintf("lab-%02d", i))
-	}
-	return out
 }
 
 func validSessionHours(v string) bool {

@@ -184,10 +184,6 @@ func (d *Driver) Release(ctx context.Context, env model.Env, sess model.Session)
 	return nil
 }
 
-// EnsureSlot is a no-op: sandboxlab has no slots to pre-create. It is here
-// because the interface has it for the kinds that do.
-func (d *Driver) EnsureSlot(context.Context, model.Env, string) error { return nil }
-
 // Live lists the sandboxes this service is running. It is scoped to the prefix
 // this service names its sandboxes with, so a sandbox someone made by hand with
 // the shared key is not reported as one of ours.

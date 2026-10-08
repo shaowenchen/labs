@@ -11,7 +11,6 @@ func applabEnv() model.Env {
 	return model.Env{
 		ID:       "applab-1",
 		Kind:     model.KindApplab,
-		Slots:    []string{"lab-01", "lab-02"},
 		Capacity: 2,
 	}
 }
@@ -21,34 +20,57 @@ func aSession(id, ip string) model.Session {
 	return model.Session{ID: id, EnvID: "applab-1", Kind: model.KindApplab, ClientIP: ip, CreatedAt: now, ExpiresAt: now.Add(2 * time.Hour)}
 }
 
-func TestReserveClaimsDistinctSlots(t *testing.T) {
+// Capacity is a count, not a set of names: as many sessions as the environment
+// allows are recorded, and the instances they get are minted later by the driver.
+func TestReserveRecordsUpToCapacity(t *testing.T) {
 	s := New()
 	env := applabEnv()
 
-	a, err := s.Reserve(env, aSession("s1", "1.1.1.1"), Limits{})
-	if err != nil {
-		t.Fatalf("Reserve s1: %v", err)
-	}
-	b, err := s.Reserve(env, aSession("s2", "2.2.2.2"), Limits{})
-	if err != nil {
-		t.Fatalf("Reserve s2: %v", err)
-	}
-	if a == b {
-		t.Fatalf("two sessions got the same slot %q", a)
-	}
-	if a != "lab-01" || b != "lab-02" {
-		t.Errorf("slots = %q, %q; want lab-01, lab-02", a, b)
+	mustReserve(t, s, env, "s1", "1.1.1.1")
+	mustReserve(t, s, env, "s2", "2.2.2.2")
+
+	if got := s.Total(); got != 2 {
+		t.Errorf("Total = %d, want 2 recorded", got)
 	}
 }
 
-func TestReserveRefusesWhenSlotsAreFull(t *testing.T) {
+func TestReserveRefusesWhenTheEnvironmentIsFull(t *testing.T) {
 	s := New()
 	env := applabEnv()
 	mustReserve(t, s, env, "s1", "1.1.1.1")
 	mustReserve(t, s, env, "s2", "2.2.2.2")
 
-	if _, err := s.Reserve(env, aSession("s3", "3.3.3.3"), Limits{}); err != ErrNoSlot {
+	if err := s.Reserve(env, aSession("s3", "3.3.3.3"), Limits{}); err != ErrNoSlot {
 		t.Fatalf("Reserve on a full environment = %v, want ErrNoSlot", err)
+	}
+}
+
+// Capacity is per environment: a second one of the same kind has its own places,
+// so filling one does not stop the other.
+func TestReserveCountsCapacityPerEnvironment(t *testing.T) {
+	s := New()
+	full := applabEnv()
+	mustReserve(t, s, full, "s1", "1.1.1.1")
+	mustReserve(t, s, full, "s2", "2.2.2.2")
+
+	other := full
+	other.ID = "applab-2"
+	if err := s.Reserve(other, model.Session{ID: "s3", EnvID: "applab-2", Kind: model.KindApplab, ClientIP: "3.3.3.3"}, Limits{}); err != nil {
+		t.Fatalf("a second environment should have its own capacity: %v", err)
+	}
+}
+
+// sandboxlab is not capped per environment, which is what it has always been:
+// only the global and per-address limits apply.
+func TestReserveDoesNotCapSandboxlabPerEnvironment(t *testing.T) {
+	s := New()
+	env := model.Env{ID: "sandboxlab-1", Kind: model.KindSandboxlab, Capacity: 1}
+
+	for i, id := range []string{"s1", "s2", "s3"} {
+		sess := model.Session{ID: id, EnvID: env.ID, Kind: model.KindSandboxlab, ClientIP: "9.9.9." + string(rune('1'+i))}
+		if err := s.Reserve(env, sess, Limits{}); err != nil {
+			t.Fatalf("Reserve %s = %v, want no per-environment cap for sandboxlab", id, err)
+		}
 	}
 }
 
@@ -57,7 +79,7 @@ func TestReserveEnforcesPerIPLimit(t *testing.T) {
 	env := applabEnv()
 	mustReserve(t, s, env, "s1", "9.9.9.9")
 
-	_, err := s.Reserve(env, aSession("s2", "9.9.9.9"), Limits{MaxPerIP: 1})
+	err := s.Reserve(env, aSession("s2", "9.9.9.9"), Limits{MaxPerIP: 1})
 	if err != ErrIPLimit {
 		t.Fatalf("second session from one address = %v, want ErrIPLimit", err)
 	}
@@ -68,27 +90,24 @@ func TestReserveEnforcesTheGlobalLimit(t *testing.T) {
 	env := applabEnv()
 	mustReserve(t, s, env, "s1", "1.1.1.1")
 
-	_, err := s.Reserve(applabEnv(), aSession("s2", "2.2.2.2"), Limits{MaxTotal: 1})
-	if err != ErrAtCapacity {
+	if err := s.Reserve(applabEnv(), aSession("s2", "2.2.2.2"), Limits{MaxTotal: 1}); err != ErrAtCapacity {
 		t.Fatalf("over the global cap = %v, want ErrAtCapacity", err)
 	}
 }
 
-func TestDropFreesTheSlot(t *testing.T) {
+// Dropping a session gives the environment its place back, so the next caller
+// fits where the last one was.
+func TestDropFreesACapacityPlace(t *testing.T) {
 	s := New()
 	env := applabEnv()
-	app := mustReserve(t, s, env, "s1", "1.1.1.1")
+	mustReserve(t, s, env, "s1", "1.1.1.1")
+	mustReserve(t, s, env, "s2", "2.2.2.2")
 
 	if err := s.Drop("s1"); err != nil {
 		t.Fatalf("Drop: %v", err)
 	}
-	if got := s.OccupiedSlots("applab-1"); len(got) != 0 {
-		t.Fatalf("slots still held after drop: %v", got)
-	}
-	// The freed slot must be handed out again.
-	again := mustReserve(t, s, env, "s2", "2.2.2.2")
-	if again != app {
-		t.Errorf("freed slot %q was not reused; got %q", app, again)
+	if err := s.Reserve(env, aSession("s3", "3.3.3.3"), Limits{}); err != nil {
+		t.Fatalf("the freed place should be usable: %v", err)
 	}
 }
 
@@ -109,10 +128,10 @@ func TestExpiredFindsOnlyPastSessions(t *testing.T) {
 	now := time.Now()
 	past := model.Session{ID: "old", EnvID: "applab-1", Kind: model.KindApplab, CreatedAt: now.Add(-3 * time.Hour), ExpiresAt: now.Add(-time.Hour)}
 	future := model.Session{ID: "new", EnvID: "applab-1", Kind: model.KindApplab, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-	if _, err := s.Reserve(env, past, Limits{}); err != nil {
+	if err := s.Reserve(env, past, Limits{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Reserve(env, future, Limits{}); err != nil {
+	if err := s.Reserve(env, future, Limits{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -124,8 +143,8 @@ func TestExpiredFindsOnlyPastSessions(t *testing.T) {
 
 func TestCompleteRecordsTheAddress(t *testing.T) {
 	s := New()
-	app := mustReserve(t, s, applabEnv(), "s1", "1.1.1.1")
-	if err := s.Complete("s1", "https://a.example.com/applab", app, "", ""); err != nil {
+	mustReserve(t, s, applabEnv(), "s1", "1.1.1.1")
+	if err := s.Complete("s1", "https://a.example.com/applab", "", "", ""); err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
 	got, ok := s.Get("s1")
@@ -135,8 +154,13 @@ func TestCompleteRecordsTheAddress(t *testing.T) {
 	if got.ConsoleURL != "https://a.example.com/applab" {
 		t.Errorf("ConsoleURL = %q", got.ConsoleURL)
 	}
-	if got.App != app {
-		t.Errorf("App = %q, want %q", got.App, app)
+	// Complete records the app id the driver minted, which is now its own name
+	// rather than something Reserve picked.
+	if err := s.Complete("s1", "https://a.example.com/applab", "lab-abcdef12", "", ""); err != nil {
+		t.Fatalf("second Complete: %v", err)
+	}
+	if again, _ := s.Get("s1"); again.App != "lab-abcdef12" {
+		t.Errorf("App = %q, want the driver's app id", again.App)
 	}
 }
 
@@ -150,11 +174,10 @@ func TestSessionsAreNewestFirst(t *testing.T) {
 	s := New()
 	now := time.Now()
 	env := applabEnv()
-	env.Slots = []string{"lab-01", "lab-02", "lab-03"}
 	env.Capacity = 3
 	for i, at := range []time.Time{now.Add(-2 * time.Minute), now, now.Add(-time.Minute)} {
 		sess := model.Session{ID: string(rune('a' + i)), EnvID: "applab-1", Kind: model.KindApplab, CreatedAt: at, ExpiresAt: at.Add(time.Hour)}
-		if _, err := s.Reserve(env, sess, Limits{}); err != nil {
+		if err := s.Reserve(env, sess, Limits{}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -164,11 +187,10 @@ func TestSessionsAreNewestFirst(t *testing.T) {
 	}
 }
 
-func mustReserve(t *testing.T, s *Store, env model.Env, id, ip string) string {
+// mustReserve records a session and fails the test if the environment refuses it.
+func mustReserve(t *testing.T, s *Store, env model.Env, id, ip string) {
 	t.Helper()
-	app, err := s.Reserve(env, aSession(id, ip), Limits{})
-	if err != nil {
+	if err := s.Reserve(env, aSession(id, ip), Limits{}); err != nil {
 		t.Fatalf("Reserve %s: %v", id, err)
 	}
-	return app
 }

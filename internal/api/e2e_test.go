@@ -61,7 +61,9 @@ func (f *fakeAppLab) handler(base string) http.Handler {
 			_, _ = w.Write([]byte(`{"error":"app already exists"}`))
 			return
 		}
-		writeEnvelope(w, http.StatusCreated, map[string]any{"id": "x"})
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		writeEnvelope(w, http.StatusCreated, map[string]any{"id": body["id"]})
 	})
 	mux.HandleFunc("POST /api/v1/apps/{app}/key/rotate", func(w http.ResponseWriter, r *http.Request) {
 		app := r.PathValue("app")
@@ -75,9 +77,9 @@ func (f *fakeAppLab) handler(base string) http.Handler {
 		f.mu.Unlock()
 		writeEnvelope(w, http.StatusOK, map[string]any{"app_id": app, "key": key})
 	})
-	mux.HandleFunc("POST /api/v1/apps/{app}/stop", func(w http.ResponseWriter, r *http.Request) {
-		f.note("stop:" + r.PathValue("app"))
-		writeEnvelope(w, http.StatusOK, map[string]any{"stopped": r.PathValue("app")})
+	mux.HandleFunc("DELETE /api/v1/apps/{app}", func(w http.ResponseWriter, r *http.Request) {
+		f.note("delete:" + r.PathValue("app"))
+		writeEnvelope(w, http.StatusOK, map[string]any{"id": r.PathValue("app"), "deleted": true})
 	})
 	return http.StripPrefix(base, mux)
 }
@@ -104,7 +106,6 @@ func newE2E(t *testing.T) (*Server, *fakeAppLab) {
 		Scheme:   "http",
 		Domain:   strings.TrimPrefix(srv.URL, "http://"),
 		BasePath: "/applab",
-		Slots:    []string{"lab-01", "lab-02"},
 		Capacity: 2,
 		APIKey:   "admin-key",
 	}
@@ -136,7 +137,7 @@ func TestEndToEndDeliverAndExpire(t *testing.T) {
 		t.Fatalf("no key was delivered: %s", res.Body.String())
 	}
 	if !strings.HasPrefix(key, "key-lab-") {
-		t.Errorf("key %q does not look like a rotated slot key", key)
+		t.Errorf("key %q does not look like a rotated app key", key)
 	}
 
 	// 2. The key was minted by a rotation against AppLab, which is what makes it
@@ -154,44 +155,46 @@ func TestEndToEndDeliverAndExpire(t *testing.T) {
 		t.Fatalf("reading a lab back leaked its key: %s", read.Body.String())
 	}
 
-	// 4. A second caller gets a different slot and a different key.
+	// 4. A second caller gets its own app and a different key: the app id is
+	//    minted per session, so two sessions can never share one.
 	res2 := do(t, s, "POST", "/api/v1/labs", "{}")
 	lab2 := data[map[string]any](t, res2)
 	if lab2["api_key"] == key {
 		t.Fatal("two callers were given the same key")
 	}
 	if lab2["app"] == lab["app"] {
-		t.Fatalf("two callers were given the same slot %v", lab["app"])
+		t.Fatalf("two callers were given the same app %v", lab["app"])
 	}
 
-	// 5. Ending the first lab rotates its key away and stops its app, in that
+	// 5. Ending the first lab rotates its key away and deletes its app, in that
 	//    order — the key must be dead before the app is torn down.
 	before := len(f.order)
 	if del := do(t, s, "DELETE", "/api/v1/labs/"+lab["session_id"].(string), ""); del.Code != http.StatusOK {
 		t.Fatalf("delete lab: status = %d", del.Code)
 	}
 	tail := f.order[before:]
-	rotateAt, stopAt := -1, -1
+	rotateAt, deleteAt := -1, -1
 	for i, c := range tail {
 		if c == "rotate:"+lab["app"].(string) {
 			rotateAt = i
 		}
-		if c == "stop:"+lab["app"].(string) {
-			stopAt = i
+		if c == "delete:"+lab["app"].(string) {
+			deleteAt = i
 		}
 	}
-	if rotateAt < 0 || stopAt < 0 {
-		t.Fatalf("releasing did not rotate then stop: %v", tail)
+	if rotateAt < 0 || deleteAt < 0 {
+		t.Fatalf("releasing did not rotate then delete: %v", tail)
 	}
-	if rotateAt > stopAt {
-		t.Fatalf("the app was stopped before its key was rotated away: %v", tail)
+	if rotateAt > deleteAt {
+		t.Fatalf("the app was deleted before its key was rotated away: %v", tail)
 	}
 
-	// 6. The freed slot comes back.
+	// 6. The freed capacity comes back, and the app name does not: a name is
+	//    minted per session and never handed out twice.
 	res3 := do(t, s, "POST", "/api/v1/labs", "{}")
 	lab3 := data[map[string]any](t, res3)
-	if lab3["app"] != lab["app"] {
-		t.Errorf("the freed slot %q was not reused; got %v", lab["app"], lab3["app"])
+	if lab3["app"] == lab["app"] {
+		t.Errorf("the released app name %q was handed out again", lab["app"])
 	}
 }
 
@@ -204,7 +207,7 @@ func TestEndToEndHandlesADownEnvironment(t *testing.T) {
 		SessionTTL: 2 * time.Hour, RateLimitCount: 100, RateLimitWindow: time.Hour, MaxSessionsPerIP: 1,
 		Envs: []model.Env{{
 			ID: "applab-1", Kind: model.KindApplab, Scheme: "http",
-			Domain: "127.0.0.1:1", BasePath: "/applab", Slots: []string{"lab-01"}, Capacity: 1, APIKey: "k",
+			Domain: "127.0.0.1:1", BasePath: "/applab", Capacity: 1, APIKey: "k",
 		}},
 	}
 	st := store.New()
