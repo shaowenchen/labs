@@ -279,9 +279,10 @@ const consoleHTML = `<!doctype html>
   /* ── what the kind is running ───────────────────────────────────────── */
   /* A table, because these are records with the same fields in each. The
      headings say what a column is once; the rows only carry the values. The id
-     and the state are set in the fixed-width face the rest of the page uses for
-     things that are data rather than prose — and because both are passed through
-     from the environment unchanged, including when the page is in Chinese.
+     is set in the fixed-width face the rest of the page uses for things that are
+     data rather than prose — it is never translated. The state is too, though it
+     carries a translated word under a Chinese page: it is still data from an
+     environment, and the face says so.
      It follows the states, which are what the rows are underneath: the kind's
      own state first, then the instances it is running. */
   .labs { margin-top: 16px; }
@@ -473,31 +474,45 @@ const langBox = document.getElementById('lang');
 // build step and no translation file to load: both languages live here as one
 // table, and every string the page draws goes through t().
 //
-// What is translated is the page's own prose. What an environment calls its own
-// state ("running", "created") and an environment's own error message are passed
-// through as they came — they are the environment's words, and a translation
-// here would be this page's guess at what they mean. The clocks are formatted in
-// the chosen language's conventions rather than left to the browser's, so the
-// page does not read half in one language and half in another.
+// What is translated is the page's own prose, and the state words an
+// environment is known to report — see LAB_STATES, which maps the handful of
+// them and passes the rest through. A state or a template the page has no word
+// for stays in the environment's own words, since translating it would be this
+// page's guess at what it means. The clocks are formatted in the chosen
+// language's conventions rather than left to the browser's, so the page does not
+// read half in one language and half in another.
 const LANGS = [
   { code: 'en', label: 'English', locale: 'en-US' },
   { code: 'zh', label: '中文', locale: 'zh-CN' },
 ];
+// LAB_STATES is the Chinese word for a state an environment reports, keyed by
+// that word lowercased. It is a table of its own rather than entries in STRINGS
+// because the key is a value that arrived from the environment, not a name
+// written into the page — and because only the translation is here: English
+// passes the environment's own word through, which is what the page did before
+// this table existed. A state this table has not been told about is passed
+// through in both languages, in the environment's own word, rather than hidden —
+// the page shows what it was given instead of guessing at it. The lookup folds
+// case first, since one environment says "Running" and the other "running".
+const LAB_STATES = {
+  created: '已创建',
+  running: '运行中',
+  stopped: '已停止',
+  pending: '等待中',
+  failed: '失败',
+};
 const STRINGS = {
   en: {
     'lead': 'Get a working environment for a couple of hours.',
-    'blurb.applab': 'Upload an application and get back the URL it is running at.',
+    'blurb.applab': "Upload your application's source and get back the URL it is running at — labs builds it and keeps it up for the session.",
     'blurb.sandboxlab': 'Create a sandbox from a template — a shell, a filesystem, a browser — and throw it away when its time is up.',
     'kind.aria': 'kind of lab',
     'state.ready': 'ready',
-    'state.key': 'key needed',
     'state.starting': 'starting',
     'state.gone': 'not answering',
     'what.cluster': 'cluster',
-    'what.app': 'app',
     'tmpl.label': 'Template',
-    'usage.sandboxes': 'sandboxes: {n} of {cap} in use',
-    'usage.slots': 'application slots: {n} of {cap} in use',
+    'usage.capacity': ', capacity {n}/{cap}',
     'env.start': 'Create a lab',
     'creating': 'Creating…',
     'col.id': 'id', 'col.state': 'state', 'col.created': 'created', 'col.expires': 'expires',
@@ -545,18 +560,15 @@ const STRINGS = {
   },
   zh: {
     'lead': '获取一个可用的环境，有效期两小时。',
-    'blurb.applab': '上传应用源码，拿回它正在运行的地址。',
+    'blurb.applab': '上传应用源码，labs 会构建并运行它，给你一个可直接访问的地址 —— 有效期至会话结束。',
     'blurb.sandboxlab': '从模板创建一个沙箱 —— shell、文件系统、浏览器 —— 到期即销毁。',
     'kind.aria': '实验室类型',
     'state.ready': '就绪',
-    'state.key': '需要密钥',
     'state.starting': '启动中',
     'state.gone': '无法访问',
     'what.cluster': '集群',
-    'what.app': '应用',
     'tmpl.label': '模板',
-    'usage.sandboxes': '沙箱：{cap} 个中占用 {n} 个',
-    'usage.slots': '应用槽位：{cap} 个中占用 {n} 个',
+    'usage.capacity': '，容量 {n}/{cap} 个',
     'env.start': '创建实验',
     'creating': '创建中…',
     'col.id': 'ID', 'col.state': '状态', 'col.created': '创建于', 'col.expires': '到期',
@@ -811,54 +823,37 @@ function render() {
   blurbBox.textContent = kind === 'sandboxlab' ? t('blurb.sandboxlab')
     : kind === 'applab' ? t('blurb.applab') : '';
 
-  // The kind's two states, which are two different facts. The cluster is the
-  // environment this service drives: is a run going, is anything serving the
-  // address. The app is what that environment hands out: is the run it made
-  // reachable from here. The second is only asked when the first is up — there
-  // is nothing at the other end of a request to a cluster that is not running —
-  // so "no run" is the first one's answer, not the second's.
-  //
-  // They are drawn separately because the failure they rule out is a real one:
-  // a cluster that is serving and refusing the key this page holds used to be a
-  // single word on the page ("key needed"), which reads as the environment
-  // being down when it is in fact up and answering.
+  // The kind's state, and what it is holding: one line. The cluster is the
+  // environment this service drives — is a run going, is anything serving the
+  // address — and the capacity after it is the same fact continued, the
+  // cluster's own number rather than a second thought. It is one line because
+  // the readiness the page is told is one answer: an environment the service
+  // reaches is ready, and one it cannot reach is not, so a second line saying
+  // the app is ready whenever the first says so said nothing the first had not.
   const env = list.find(e => e.kind === kind);
   const up = !!(env && env.ready);
   const cluster = !env ? null
     : env.ready ? { cls: 'ok', word: t('state.ready') }
       : env.unauthorized ? { cls: 'err', word: t('state.gone') }
         : { cls: 'warn', word: t('state.starting') };
-  const app = !up ? null
-    : env.unauthorized ? { cls: 'err', word: t('state.key') }
-      : { cls: 'ok', word: t('state.ready') };
   usageBox.replaceChildren();
-  if (cluster || app) {
+  if (cluster) {
     const box = document.createElement('div'); box.className = 'states';
-    [[t('what.cluster'), cluster], [t('what.app'), app]].forEach(([what, st]) => {
-      // The app's line is only there once the cluster is up and there is an app
-      // to describe; below that it is a second dot saying nothing.
-      if (!st) return;
-      const line = document.createElement('span'); line.className = 'state ' + st.cls;
-      const w = document.createElement('span'); w.className = 'what'; w.textContent = what;
-      const v = document.createElement('span'); v.textContent = st.word;
-      line.append(w, v);
-      box.append(line);
-    });
-    // How much the kind holds is the cluster's number and only exists when there
-    // is a cluster to ask: an environment that is not up is never asked, so its
-    // count is zero by construction, and "0 of 8 in use" under "starting" is a
-    // number nobody produced being read by someone deciding whether to press the
-    // button. The reason line is the honest answer there. It rides on the states'
-    // line rather than below it because it is a property of what is on that
-    // line, not a separate thought.
-    const capacity = env && env.capacity;
-    if (up && capacity) {
+    const line = document.createElement('span'); line.className = 'state ' + cluster.cls;
+    const w = document.createElement('span'); w.className = 'what'; w.textContent = t('what.cluster');
+    const v = document.createElement('span'); v.textContent = cluster.word;
+    line.append(w, v);
+    // The capacity is shown only when the cluster is up, and it is only asked
+    // then: an environment that is not up is never reached, so its count is zero
+    // by construction and "0/8" under "starting" is a number nobody produced
+    // being read by someone deciding whether to press the button. The reason
+    // line is the honest answer there.
+    if (up && env.capacity) {
       const n = document.createElement('span'); n.className = 'usage';
-      n.textContent = kind === 'sandboxlab'
-        ? t('usage.sandboxes', { n: env.occupied, cap: capacity })
-        : t('usage.slots', { n: env.occupied, cap: capacity });
-      box.append(n);
+      n.textContent = t('usage.capacity', { n: env.occupied, cap: env.capacity });
+      line.append(n);
     }
+    box.append(line);
     usageBox.append(box);
   }
   reasonBox.textContent = (env && !env.ready && env.message) ? env.message : '';
@@ -903,14 +898,26 @@ function maybeAutoStart(kind, env, up) {
   autoStartAt = Date.now();
   create({ silent: true });
 }
+// stateWord is the state column's one word. The environment names it, so this
+// translates what it is known to say and passes anything else through in that
+// environment's own word — the page shows what it was given rather than hiding
+// a state it has no word for, which is the honest answer for a value this side
+// does not control. Case is folded before the lookup because the two
+// environments spell the same state differently ("Running", "running").
+function stateWord(state) {
+  if (!state) return '';
+  const word = String(state).toLowerCase();
+  return (lang === 'zh' && LAB_STATES[word]) ? LAB_STATES[word] : word;
+}
 // renderLabs draws what the kind is running as a table, one row per instance.
 //
 // A table rather than the rows this used to draw, because these are records with
 // the same fields in each: the column headings then say what each value is once
-// rather than on every row. The state is passed through in the environment's own
-// word — applab's "created" is an app record with nothing deployed behind it, and
-// a friendlier word would be this page's guess at what that implies — so the
-// state column is not translated and is set in a fixed-width face to say so.
+// rather than on every row. The state is the environment's own word, given its
+// Chinese equivalent by stateWord where there is one — applab's "created" is an
+// app record with nothing deployed behind it, and a friendlier word would be
+// this page's guess at what that implies — so an unknown state stays as it came
+// and the cell keeps the fixed-width face to say the value is data.
 //
 // The times are the two columns that differ per row: when the instance was made,
 // and when it ends. Both are drawn from the row's own data attributes by tick(),
@@ -945,7 +952,7 @@ function renderLabs(mine) {
     tr.append(Object.assign(document.createElement('td'), { className: 'id', textContent: it.id }));
     // A state the environment did not name is a blank cell rather than an empty
     // label: there is nothing to say, and the column is already headed.
-    tr.append(Object.assign(document.createElement('td'), { className: 'st', textContent: it.state ? String(it.state).toLowerCase() : '' }));
+    tr.append(Object.assign(document.createElement('td'), { className: 'st', textContent: stateWord(it.state) }));
     const created = document.createElement('td'); created.className = 'meta'; created.dataset.created = it.created_at || '';
     const expires = document.createElement('td'); expires.className = 'meta'; expires.dataset.expires = expiresOf(it);
     tr.append(created, expires);
