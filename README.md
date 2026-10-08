@@ -162,18 +162,18 @@ on the domain as well) plus a second repository, not a labs setting.
 ## What you have to do in the other repositories
 
 **One key, sent in every dispatch.** labs calls every environment with one key —
-`LABS_ACTION_API_KEY` when it is set, otherwise one it generated — and passes it
-as the `api_key` input on every dispatch. That one key, on both sides, is all it
-takes to drive any lab action: both workflows thread it through
+`ADMIN_KEY` when it is set, otherwise one it generated — and passes it as the
+`api_key` input on every dispatch. That one key, on both sides, is all it takes
+to drive any lab action: both workflows thread it through
 (`api_key: ${{ inputs.api_key || secrets.<THEIR_SECRET> }}`), so the environment
 comes up holding the key labs will call it with. Set it to the same value as each
-repository's own secret — `APPLAB_API_KEY` for applab, `ADMIN_KEY` for
-sandboxlab — and one key covers both kinds.
+repository's own secret — `APPLAB_API_KEY` for applab, and for sandboxlab the
+secret of the same name as this variable — and one key covers both kinds.
 
 **There is no built-in key.** labs used to fall back to a constant compiled into
 this repository, which let a deployment run with nothing configured. It is gone:
 a key checked into a repository is not a secret, so anyone who could read it
-could call any deployment that had not set one. Instead, `LABS_ACTION_API_KEY` is
+could call any deployment that had not set one. Instead, `ADMIN_KEY` is
 optional — leave it out and the service generates a random one at startup, so a
 deployment can come up with no key configured at all and still hand out labs it
 started itself. What that costs is reach: a key that is random per process cannot
@@ -199,13 +199,13 @@ would change only the sandboxlab driver.
 **Either one — one line, for blue/green.** The `concurrency.group` change above,
 which lets two environments of the same kind run at once.
 
-**The key is a pair, and both halves have to match.** `LABS_ACTION_API_KEY`
+**The key is a pair, and both halves have to match.** `ADMIN_KEY`
 (or `LABS_KEY_<ID>` for one environment) is the value labs sends at dispatch;
-the repository's own secret — `APPLAB_API_KEY` or `ADMIN_KEY` — is what its
-workflow falls back to when a dispatch carries nothing. They are not
-alternatives: the environment is called with whatever the dispatch carried, so a
-value in only one of the two places is a live environment reachable by only one
-of the two sides.
+the repository's own secret — `APPLAB_API_KEY` for applab, and `ADMIN_KEY` for
+sandboxlab, where it is the same name as this variable — is what its workflow
+falls back to when a dispatch carries nothing. They are not alternatives: the
+environment is called with whatever the dispatch carried, so a value in only one
+of the two places is a live environment reachable by only one of the two sides.
 
 ## Configuration
 
@@ -239,15 +239,16 @@ hostname each project's own debugger workflow starts on
 one thing that is neither derived nor required — leave it out and a random one is
 generated for the process, set it and that value is used.
 
-`LABS_ACTION_API_KEY` is the exception to everything above: the repository list
-and the address can be left out and derived, the key cannot be — it is either
-computed (randomly, per process) or configured. A generated key is what lets a
-deployment run with nothing set; a configured one is what lets it reach
-environments it did not start itself. The overrides below are named for the
-repository with its name uppercased (`APPLAB` for `shaowenchen/applab`).
+`ADMIN_KEY` is the exception to everything above: the repository list and the
+address can be left out and derived, the key cannot be — it is either computed
+(randomly, per process) or configured. A generated key is what lets a deployment
+run with nothing set; a configured one is what lets it reach environments it did
+not start itself. It carries the same name as sandboxlab's own repository secret,
+so that half needs no mapping. The overrides below are named for the repository
+with its name uppercased (`APPLAB` for `shaowenchen/applab`).
 
-- **`LABS_ACTION_API_KEY`** — optional. Unset, the service generates a random key
-  at startup and says so in its log; set, that value is what labs calls every
+- **`ADMIN_KEY`** — optional. Unset, the service generates a random key at
+  startup and says so in its log; set, that value is what labs calls every
   environment with. There is no built-in key. See "What you have to do in the
   other repositories" above for how each project is given it.
 - **`LABS_DOMAIN_APPLAB`** (or `LABS_DOMAIN_SUFFIX`, a shared suffix under which
@@ -255,7 +256,7 @@ repository with its name uppercased (`APPLAB` for `shaowenchen/applab`).
   instead of discovering it, so an environment is reachable before its run has
   printed anything.
 - **`LABS_KEY_APPLAB`** — use a different key for this one environment, instead
-  of `LABS_ACTION_API_KEY`.
+  of `ADMIN_KEY`.
 
 Whatever the address, it must be the hostname of a **named** Cloudflare tunnel,
 which is stable across runs; a quick tunnel is assigned a new hostname each time.
@@ -278,7 +279,7 @@ Two things are worth knowing at the top:
 
 - **The key is neither fixed nor discovered.** Neither control plane reports its
   key over its unauthenticated `/api/v1/config` (nor should it), so labs cannot
-  read it — it calls every environment with `LABS_ACTION_API_KEY` when that is
+  read it — it calls every environment with `ADMIN_KEY` when that is
   set, and with a key it generated itself when it is not. A generated key is
   random per process, so it reaches only the environments this process started;
   setting the variable is what lets labs reach an environment it did not itself
@@ -380,7 +381,7 @@ the Vercel project's environment variables, set in the dashboard. There is no
 reaches the service through Vercel's proxy and its port is not reachable
 directly, which is the same case the compose file makes for Caddy.
 
-**Set `LABS_ACTION_API_KEY` here; do not leave it to be generated.** A generated
+**Set `ADMIN_KEY` here; do not leave it to be generated.** A generated
 key is random per process, and on Vercel every cold start is a new process — so
 each instance would mint its own key, and an environment one instance started
 would refuse every other. It also cannot reach an environment an earlier

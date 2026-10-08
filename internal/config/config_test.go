@@ -13,7 +13,7 @@ import (
 // a test only has to override the one it is about. sandboxlab is explicitly off
 // in the baseline, so a test about applab sees exactly one environment.
 //
-// LABS_ACTION_API_KEY is part of the baseline so tests that are not about the
+// ADMIN_KEY is part of the baseline so tests that are not about the
 // key do not have to think about it — a configuration with no key is valid, it
 // just gets a generated one, which would make every assertion about a specific
 // key sit next to a value no test wrote.
@@ -24,7 +24,7 @@ func setEnv(t *testing.T, overrides map[string]string) {
 		"LABS_APPLAB_REPOS":     "o/applab",
 		"LABS_SANDBOXLAB_REPOS": "",
 		"LABS_DOMAIN_SUFFIX":    "example.com",
-		"LABS_ACTION_API_KEY":   testKey,
+		"ADMIN_KEY":             testKey,
 	}
 	for k, v := range override(base, overrides) {
 		t.Setenv(k, v)
@@ -38,7 +38,7 @@ func setEnv(t *testing.T, overrides map[string]string) {
 const testKey = "test-key"
 
 // unsetEnv removes a variable for the life of the test, so a test can exercise
-// the "neither set nor empty" case — including LABS_ACTION_API_KEY, which has
+// the "neither set nor empty" case — including ADMIN_KEY, which has
 // no default to take.
 func unsetEnv(t *testing.T, keys ...string) {
 	t.Helper()
@@ -323,7 +323,7 @@ func TestMissingTokenIsAProblem(t *testing.T) {
 func TestRepoDefaultsToTheTwoProjects(t *testing.T) {
 	unsetEnv(t, "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS")
 	t.Setenv("GITHUB_TOKEN", "token")
-	t.Setenv("LABS_ACTION_API_KEY", testKey)
+	t.Setenv("ADMIN_KEY", testKey)
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
 		t.Fatalf("a deployment with neither repository variable should be usable, problems: %v", cfg.Problems)
@@ -353,7 +353,7 @@ func TestBadRepoIsAProblem(t *testing.T) {
 // costs is that it reaches only environments this process started, which the
 // service says at startup.
 func TestMissingKeyIsGenerated(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_ACTION_API_KEY": ""})
+	setEnv(t, map[string]string{"ADMIN_KEY": ""})
 	unsetEnv(t, "LABS_KEY_APPLAB")
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
@@ -375,7 +375,7 @@ func TestMissingKeyIsGenerated(t *testing.T) {
 // configured, and both get a generated one. Neither is an error any more.
 func TestMissingKeyUnsetIsAlsoGenerated(t *testing.T) {
 	setEnv(t, nil)
-	unsetEnv(t, "LABS_ACTION_API_KEY", "LABS_KEY_APPLAB")
+	unsetEnv(t, "ADMIN_KEY", "LABS_KEY_APPLAB")
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
 		t.Fatalf("a configuration with no key variable set should be usable, problems: %v", cfg.Problems)
@@ -406,7 +406,7 @@ func TestGeneratedKeyIsSharedWithinALoadAndFreshAcrossLoads(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_APPLAB_REPOS":     "o/applab",
 		"LABS_SANDBOXLAB_REPOS": "o/sandboxlab",
-		"LABS_ACTION_API_KEY":   "",
+		"ADMIN_KEY":             "",
 	})
 	unsetEnv(t, "LABS_KEY_APPLAB", "LABS_KEY_SANDBOXLAB")
 	first := mustLoad(t)
@@ -615,7 +615,7 @@ func TestEmptyDomainSendsNoDomainInput(t *testing.T) {
 	}
 }
 
-// LABS_ACTION_API_KEY is the one key a deployment is called with, which is how
+// ADMIN_KEY is the one key a deployment is called with, which is how
 // a single fixed value covers every environment rather than one per repository.
 // It reaches every kind the same way — sent in the dispatch — so one key is all
 // that is needed to call any of them.
@@ -623,7 +623,7 @@ func TestOneActionKeyForEveryEnvironment(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_APPLAB_REPOS":     "o/applab",
 		"LABS_SANDBOXLAB_REPOS": "o/sandboxlab",
-		"LABS_ACTION_API_KEY":   "one-action-key",
+		"ADMIN_KEY":             "one-action-key",
 	})
 	cfg := mustLoad(t)
 	if len(cfg.Envs) != 2 {
@@ -645,7 +645,7 @@ func TestPerEnvironmentKeyOverridesTheSharedOne(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_APPLAB_REPOS":     "o/applab",
 		"LABS_SANDBOXLAB_REPOS": "o/sandboxlab",
-		"LABS_ACTION_API_KEY":   "one-action-key",
+		"ADMIN_KEY":             "one-action-key",
 		"LABS_KEY_SANDBOXLAB":   "its-own-key",
 	})
 	cfg := mustLoad(t)
