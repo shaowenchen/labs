@@ -281,8 +281,10 @@ const consoleHTML = `<!doctype html>
      headings say what a column is once; the rows only carry the values. The id
      and the state are set in the fixed-width face the rest of the page uses for
      things that are data rather than prose — and because both are passed through
-     from the environment unchanged, including when the page is in Chinese. */
-  .labs { margin-top: 10px; }
+     from the environment unchanged, including when the page is in Chinese.
+     It follows the states, which are what the rows are underneath: the kind's
+     own state first, then the instances it is running. */
+  .labs { margin-top: 16px; }
   .labs-table { width: 100%; border-collapse: collapse; font-size: .86rem; }
   .labs-table th {
     text-align: left; font-weight: 600; font-size: .74rem;
@@ -420,11 +422,11 @@ const consoleHTML = `<!doctype html>
       <label class="label" id="tmpl-label" for="template">Template</label>
       <select id="template"></select>
     </div>
+    <div id="usage"></div>
     <div class="reason" id="reason"></div>
     <div class="labs" id="labs"></div>
-    <div id="usage"></div>
     <div class="actions">
-      <button id="create">Start an environment</button>
+      <button id="create">Create a lab</button>
     </div>
   </div>
   <footer id="build"></footer>
