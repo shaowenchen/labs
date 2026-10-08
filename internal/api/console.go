@@ -362,6 +362,14 @@ const consoleHTML = `<!doctype html>
   .key-modal .body { padding: 8px 24px 20px; }
   .key-modal .body:empty { display: none; }
   .key-modal .row { grid-template-columns: 5.5rem 1fr; }
+  /* What to wait for before the lab is usable. Its own line above the one-time
+     key notice, and quiet like it: both are notes about the hand-off rather
+     than part of what is handed over. */
+  .key-modal .warming {
+    margin: 14px 24px 0; padding: 11px 13px; font-size: .85rem;
+    border: 1px solid var(--line); border-radius: var(--radius-sm);
+    background: var(--line-soft); color: var(--muted);
+  }
   .key-modal .once {
     margin: 14px 24px 0; padding: 11px 13px; font-size: .85rem;
     border: 1px solid var(--line); border-radius: var(--radius-sm);
@@ -547,6 +555,7 @@ const STRINGS = {
     'row.how': 'how',
     'how.sandbox': 'Open the link — the key is already in it.',
     'how.other': 'Open the console and paste the key.',
+    'warming': 'It comes up after a moment — wait until its state reads "{state}" before using it.',
     'once': 'This key is shown once, now. It is not shown again — copy it before closing.',
     'ready': 'Ready',
     'modaltitle': 'Your {kind} lab is ready',
@@ -603,6 +612,7 @@ const STRINGS = {
     'row.how': '使用方式',
     'how.sandbox': '打开链接即可 —— 密钥已包含在链接里。',
     'how.other': '打开控制台并粘贴密钥。',
+    'warming': '需要等待片刻才能启动完成 —— 状态变为“{state}”后再使用。',
     'once': '密钥只在此处显示一次，关闭后不再显示 —— 请先复制。',
     'ready': '已就绪',
     'modaltitle': '你的 {kind} 实验室已就绪',
@@ -1189,6 +1199,17 @@ function renderModalText(d) {
   if (d.app) kmBody.append(row(t('row.app'), '<code>' + d.app + '</code>'));
   if (d.template) kmBody.append(row(t('row.template'), '<code>' + d.template + '</code>'));
   kmBody.append(row(t('row.how'), d.kind === 'sandboxlab' ? t('how.sandbox') : t('how.other')));
+
+  // The lab is handed over before it is usable: provisioning mints the
+  // credential at once, but the app or sandbox behind it takes a moment to come
+  // up. Said here rather than discovered from a link that does not answer yet.
+  // The state word goes through stateWord, so a Chinese page names the word the
+  // reader will actually see in the list below rather than the environment's
+  // English one.
+  const warming = document.createElement('div');
+  warming.className = 'warming';
+  warming.textContent = t('warming', { state: stateWord('running') });
+  kmBody.append(warming);
 
   const once = document.createElement('div');
   once.className = 'once';
