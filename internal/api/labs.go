@@ -41,10 +41,6 @@ type labResponse struct {
 	SandboxID  string            `json:"sandbox_id,omitempty"`
 	Template   string            `json:"template,omitempty"`
 	Links      map[string]string `json:"links,omitempty"`
-
-	// Warning is a caveat the caller should see, such as a shared credential. It
-	// is advisory: the lab works either way.
-	Warning string `json:"warning,omitempty"`
 }
 
 // createLab delivers a lab, which is the product: one anonymous call, one
@@ -96,7 +92,6 @@ func (s *Server) createLab(w http.ResponseWriter, r *http.Request) {
 		SandboxID:  result.Session.SandboxID,
 		Template:   result.Session.Template,
 		Links:      links,
-		Warning:    result.Warning,
 	})
 }
 

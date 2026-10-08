@@ -147,9 +147,6 @@ func TestProvisionCreatesASandboxAndKeysTheLink(t *testing.T) {
 	if !strings.Contains(got.ConsoleURL, "key=shared-key") {
 		t.Errorf("ConsoleURL = %q, want the key in the link", got.ConsoleURL)
 	}
-	if got.Warning == "" {
-		t.Error("a shared key should come with a warning")
-	}
 }
 
 // With no template configured, the catalog's first is used.

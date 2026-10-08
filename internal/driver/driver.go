@@ -97,10 +97,6 @@ type Provisioned struct {
 	// them. It is echoed back rather than assumed, because the driver is what
 	// resolves a request that named none onto the environment's default.
 	Template string
-
-	// Warning is a caveat worth passing to the caller — for example, that the
-	// credential is shared across sessions. Empty when there is nothing to say.
-	Warning string
 }
 
 // Choice is one template a kind lets a caller pick from.

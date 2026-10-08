@@ -194,9 +194,9 @@ one of those hostnames, and labs is pointed at it with `LABS_DOMAIN_SANDBOXLAB`
 (or a suffix that produces it); the default here is the first.
 
 Because sandboxlab has one key for the whole deployment, a lab handed out from
-it carries that key and the warning that says so. sandboxlab removed per-user
-keys upstream, so this is what the deployment supports; a returned per-user key
-would change only the sandboxlab driver.
+it carries that key. sandboxlab removed per-user keys upstream, so this is what
+the deployment supports; a returned per-user key would change only the
+sandboxlab driver.
 
 **Either one — one line, for blue/green.** The `concurrency.group` change above,
 which lets two environments of the same kind run at once.

@@ -46,7 +46,6 @@ type Result struct {
 	Session    model.Session
 	ConsoleURL string
 	APIKey     string
-	Warning    string
 }
 
 // Manager provisions and releases sessions across the environments.
@@ -380,7 +379,7 @@ func (m *Manager) provisionPass(ctx context.Context, req ProvisionRequest, clien
 			"sandbox", prov.SandboxID,
 			"expires_at", sess.ExpiresAt.Format(time.RFC3339),
 		)
-		return Result{Session: sess, ConsoleURL: console, APIKey: prov.APIKey, Warning: prov.Warning}, nil, false
+		return Result{Session: sess, ConsoleURL: console, APIKey: prov.APIKey}, nil, false
 	}
 
 	// Nothing was delivered. If a limit stopped every environment, that is the

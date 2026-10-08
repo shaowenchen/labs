@@ -7,10 +7,10 @@
 // thing applab cannot do.
 //
 // The credential is the deployment's single key. sandboxlab removed per-user
-// keys upstream, so there is one key that reaches every sandbox, and this
-// driver hands it to the caller with a warning that says so. It is the honest
-// description of what the deployment supports; a per-user key, if it returns,
-// would change this method and nothing else.
+// keys upstream, so there is one key that reaches every sandbox, and this driver
+// hands that key to the caller. It is the honest description of what the
+// deployment supports; a per-user key, if it returns, would change this method
+// and nothing else.
 package sandboxlab
 
 import (
@@ -28,10 +28,6 @@ import (
 	"github.com/shaowenchen/labs/internal/driver"
 	"github.com/shaowenchen/labs/internal/model"
 )
-
-// sharedKeyWarning is delivered alongside a session, because the key is not
-// scoped to the session and a caller should know that before they use it.
-const sharedKeyWarning = "this lab uses the environment's shared key, which can reach every sandbox in the deployment"
 
 // Driver implements driver.Driver for sandboxlab environments.
 type Driver struct {
@@ -167,7 +163,6 @@ func (d *Driver) Provision(ctx context.Context, env model.Env, req driver.Provis
 		APIKey:     env.APIKey,
 		SandboxID:  sb.ID,
 		Template:   template,
-		Warning:    sharedKeyWarning,
 	}, nil
 }
 
