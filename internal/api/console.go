@@ -857,14 +857,15 @@ function render() {
     usageBox.append(box);
   }
   reasonBox.textContent = (env && !env.ready && env.message) ? env.message : '';
-  // One word for both states. The button says what pressing it asks for — an
-  // environment — not what the environment happens to be doing right now; that
-  // is what the lines above it are for. A kind that is up still hands out a lab
-  // and one that is not is what the press starts, and the two differ in what
-  // comes back, not in what is being asked for. It is never hidden: a kind with
-  // nothing running still needs a way to ask, since asking is what starts it.
+  // The button asks for a lab, and a lab cannot be made until the environment
+  // that serves it is up — so it is disabled while the cluster is not ready,
+  // rather than accepted and refused. The press is not what starts an
+  // environment any more: the page's own trigger does that (see
+  // maybeAutoStart), so a kind nobody has started still comes up and the button
+  // enables when it does. The state line above says which of the two it is
+  // waiting on — starting, or up-but-refusing-the-key, which no press would fix.
   createBtn.textContent = t('env.start');
-  createBtn.disabled = !kind;
+  createBtn.disabled = !kind || !up;
 
   renderLabs(labs.filter(l => l.kind === kind));
 
@@ -876,13 +877,14 @@ function render() {
 }
 // maybeAutoStart brings a kind up by itself, so that a visitor arriving at a
 // kind nobody has started yet is not the one who has to work out that they can.
+// It is the only thing that starts one: the create button is disabled while the
+// cluster is not ready, so this trigger is what a cold kind comes up from.
 //
 // The condition is the one the page already draws as "starting": the kind is
 // served and the page is reading it, its environment is neither up nor
 // unauthorized, and nothing of the visitor's is already being made. The request
 // is the same one the button sends, and the server answers it the same way —
-// with the environment a few minutes out — so what this changes is who asks
-// first, not what is asked for.
+// with the environment a few minutes out.
 //
 // It is guarded in time, not in state. A trigger that only ever fired once
 // would leave a kind that came up and then went down sitting idle, so the page
