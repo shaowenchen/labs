@@ -90,6 +90,17 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Every push leaves the previous version's tags behind, and Docker Hub has
+      # no retention setting on any plan — its own docs describe deleting tags by
+      # hand and nothing else. So each push removes the ones it made stale, after
+      # the new image is up so the repository is never left without a good one.
+      # `latest` is never a candidate; see the script.
+      - name: prune the older tags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: hack/prune-dockerhub-tags.sh "${{ github.repository_owner }}/labs" 3
+
   # Pushing to a main branch deploys the Vercel project, and it is the only
   # thing that does: Vercel's own git integration is switched off in
   # vercel.json, so a push does not deploy twice — once by Vercel and once

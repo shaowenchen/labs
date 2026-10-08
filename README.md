@@ -328,6 +328,12 @@ Secrets and variables → Actions**:
 | `DOCKERHUB_USERNAME` | the Docker Hub account name |
 | `DOCKERHUB_TOKEN` | an access token with Read & write — never the account password |
 
+Each push also prunes the tags it made stale, keeping `latest` and the newest
+three. Docker Hub has no tag retention on any plan — its docs describe deleting
+tags by hand — so the publisher does it: `hack/prune-dockerhub-tags.sh`, which is
+worth reading if you want a different number kept. Immutable tags are left alone
+rather than failing the run, and `latest` is never a candidate.
+
 ### On Vercel
 
 The service runs there as a server, not as a function. `cmd/server/main.go` is
@@ -347,6 +353,10 @@ repository secrets:
 | `VERCEL_TOKEN` | `vercel.com/account/tokens` |
 | `VERCEL_ORG_ID` | `vercel link` — the values land in `.vercel/project.json` |
 | `VERCEL_PROJECT_ID` | the same file |
+
+The project is `shaowenchens-projects/labs`; `VERCEL_ORG_ID` is the id of the
+`shaowenchens-projects` team, so both ids come from linking this repository to
+that project.
 
 The service's own settings — `LABS_GITHUB_TOKEN`, the repositories, the key — are
 the Vercel project's environment variables, set in the dashboard. There is no
