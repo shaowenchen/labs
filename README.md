@@ -312,11 +312,10 @@ and `GET /api/v1/config` say what is not ready and why.
 ### The image, from CI
 
 Pushing to `master` or `main`, or pushing a `v*` tag, builds the image for
-`linux/amd64` and `linux/arm64` and pushes the two under one manifest, so a pull
-on either architecture gets a native image. A release tag `v1.2.3` publishes
-`1.2.3`, `1.2` and `latest`; a branch push publishes the branch name and
-`sha-<commit>` and leaves `latest` alone. The image is
-`docker.io/<owner>/labs`, the same name the Makefile's `IMAGE` default uses.
+`linux/amd64` and `linux/arm64` and pushes them under one manifest, so a pull on
+either architecture gets a native image. It is `docker.io/<owner>/labs`, the
+same name the Makefile's `IMAGE` default uses, tagged `latest` and with the
+version `git describe` reports.
 
 The version and commit are stamped in exactly as the Makefile stamps them, so an
 image built by CI and one built locally report the same thing.
@@ -328,10 +327,6 @@ Secrets and variables → Actions**:
 | --- | --- |
 | `DOCKERHUB_USERNAME` | the Docker Hub account name |
 | `DOCKERHUB_TOKEN` | an access token with Read & write — never the account password |
-
-A pull request builds the image to check the Dockerfile still builds, and does
-not log in or push: the login steps are skipped on `pull_request`, so a fork
-cannot read the secrets by opening one.
 
 ## Development
 
