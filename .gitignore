@@ -3,3 +3,7 @@
 .env
 *.out
 coverage.out
+# The Vercel CLI writes project linkage here. The project ids are not secrets —
+# the token that uses them is — but they are per-machine and would be wrong for
+# anyone else, so they stay out.
+.vercel/

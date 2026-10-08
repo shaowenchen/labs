@@ -328,6 +328,54 @@ Secrets and variables → Actions**:
 | `DOCKERHUB_USERNAME` | the Docker Hub account name |
 | `DOCKERHUB_TOKEN` | an access token with Read & write — never the account password |
 
+### On Vercel
+
+The service runs there as a server, not as a function. `cmd/server/main.go` is
+one of the entry points Vercel's Go framework preset looks for; it binds the
+`PORT` Vercel gives it and Vercel routes every request to it with the path
+unchanged, so the service's own routing sees `/` and `/api/v1/labs` exactly as it
+does behind Caddy. `vercel.json` pins the framework and switches Vercel's own git
+integration off, so a push deploys once — from here — rather than twice.
+
+The build and the deploy are GitHub Actions' job. The `vercel` job in
+`.github/workflows/ci.yml` runs `vercel build` on the runner and uploads only the
+result, so the source is never sent to Vercel to be built there. It needs three
+repository secrets:
+
+| Secret | Where it comes from |
+| --- | --- |
+| `VERCEL_TOKEN` | `vercel.com/account/tokens` |
+| `VERCEL_ORG_ID` | `vercel link` — the values land in `.vercel/project.json` |
+| `VERCEL_PROJECT_ID` | the same file |
+
+The service's own settings — `LABS_GITHUB_TOKEN`, the repositories, the key — are
+the Vercel project's environment variables, set in the dashboard. There is no
+`.env` in the deployment. Set `LABS_TRUSTED_PROXY=true` there: every request
+reaches the service through Vercel's proxy and its port is not reachable
+directly, which is the same case the compose file makes for Caddy.
+
+**What Vercel costs this service.** Read this before deploying there, because it
+is the shape the service was built against rather than a detail to find later.
+It is one long-lived process, and two of its properties do not survive a platform
+that runs several instances and starts them cold:
+
+- **The session store is in memory.** Two instances hold two different halves of
+  the sessions, so two callers arriving on different instances can be handed the
+  same applab slot and the same key. The concurrent-session caps are enforced
+  against that same store, so they are per-instance too.
+- **The reaper does not run.** It is a goroutine the process owns, and a process
+  started per request has no life to own one. Expiry is then left to the
+  environments: sandboxlab reaps its own sandboxes, but applab's keys do not
+  expire on their own and live until the environment is replaced.
+- **`DELETE /api/v1/labs/{id}` can be a no-op.** A release looks the session up in
+  the instance's own store; a session created on a different instance is not
+  there to find, so the credential is not revoked.
+
+None of this makes the deployment unsafe — the console serves a static document
+and no key is ever logged — but it makes the limits and the expiry best-effort
+rather than the guarantees they are on a single host. The rest of this section
+describes that host, which is the shape the service was built for.
+
 ## Development
 
 ```bash

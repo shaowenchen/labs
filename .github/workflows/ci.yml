@@ -89,3 +89,42 @@ jobs:
             COMMIT=${{ steps.v.outputs.commit }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Pushing to a main branch deploys the Vercel project, and it is the only
+  # thing that does: Vercel's own git integration is switched off in
+  # vercel.json, so a push does not deploy twice — once by Vercel and once
+  # here. The build runs in this runner (`vercel build`) and only the output is
+  # uploaded, so the source is not sent to Vercel to be built there.
+  #
+  # It needs three repository secrets, all from Vercel:
+  #
+  #   VERCEL_TOKEN        vercel.com/account/tokens
+  #   VERCEL_ORG_ID       from `vercel link`, in .vercel/project.json
+  #   VERCEL_PROJECT_ID   the same file
+  #
+  # The service's own settings — LABS_GITHUB_TOKEN and the rest — are read from
+  # the Vercel project's environment variables at runtime, not from here, so
+  # they are set in the Vercel dashboard rather than in this repository.
+  vercel:
+    # A deployment is worth nothing if the tests do not pass.
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    # Through the environment rather than a --token argument, so the token does
+    # not appear in the command line the runner logs.
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install the Vercel CLI
+        run: npm install --global vercel@latest
+      # The project settings and environment variables have to be present before
+      # the build; `vercel build` reads them from what this writes.
+      - name: pull the project settings
+        run: vercel pull --yes --environment=production
+      - name: build
+        run: vercel build --prod
+      - name: deploy
+        run: vercel deploy --prebuilt --prod
