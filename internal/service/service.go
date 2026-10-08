@@ -166,12 +166,6 @@ func Load(cfg Config) (config.Config, *slog.Logger, error) {
 	log := logging.New(resolved.LogLevel, os.Stderr)
 	slog.SetDefault(log)
 	log.Info("starting labs", "build", buildinfo.String())
-	// Worth a line: a generated key reaches only the environments this process
-	// started, and someone whose lab will not open should hear that here rather
-	// than have to infer it from a refused call.
-	if resolved.GeneratedKey {
-		log.Info("no ADMIN_KEY is set, so a key was generated for this process; it reaches only the environments this process starts. Set ADMIN_KEY to the repositories' key to reach ones already up")
-	}
 	if cfg.PrintConfig {
 		printResolved(resolved, log)
 	}

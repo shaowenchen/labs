@@ -15,8 +15,8 @@ import (
 //
 // ADMIN_KEY is part of the baseline so tests that are not about the
 // key do not have to think about it — a configuration with no key is valid, it
-// just gets a generated one, which would make every assertion about a specific
-// key sit next to a value no test wrote.
+// just carries no key, which would make every assertion about a specific key sit
+// next to an empty value.
 func setEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
 	base := map[string]string{
@@ -347,82 +347,47 @@ func TestBadRepoIsAProblem(t *testing.T) {
 	}
 }
 
-// A key left out is generated, not an error. There is no built-in key — a value
-// checked into this repository is one anyone who can read it could call a
-// deployment with — so the service mints one for the process instead. What that
-// costs is that it reaches only environments this process started, which the
-// service says at startup.
-func TestMissingKeyIsGenerated(t *testing.T) {
+// A key left out is left out. There is no built-in value — a key checked into
+// this repository is one anyone who can read it could call a deployment with —
+// and nothing is generated in its place either, because a value that changes
+// every restart is not one a dispatch and a call could agree on. Empty is the
+// answer: no api_key in the dispatch, no credential on a call.
+func TestMissingKeyIsEmptyNotGenerated(t *testing.T) {
 	setEnv(t, map[string]string{"ADMIN_KEY": ""})
 	unsetEnv(t, "LABS_KEY_APPLAB")
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
 		t.Fatalf("a configuration without a key should be usable, problems: %v", cfg.Problems)
 	}
-	if !cfg.GeneratedKey {
-		t.Error("GeneratedKey = false for a configuration that set no key")
+	if got := cfg.Envs[0].APIKey; got != "" {
+		t.Errorf("api key = %q, want empty; nothing should be generated in its place", got)
 	}
-	got := cfg.Envs[0].APIKey
-	if got == "" {
-		t.Fatal("api key is empty; a missing key should be generated, not left blank")
-	}
-	if got == testKey {
-		t.Errorf("api key = %q, want a generated one rather than the value some other test set", got)
+	if _, ok := cfg.Envs[0].DispatchInputs("4")["api_key"]; ok {
+		t.Error("the dispatch carries an api_key for a configuration with no key")
 	}
 }
 
 // Absence and emptiness are the same thing here: both mean no key was
-// configured, and both get a generated one. Neither is an error any more.
-func TestMissingKeyUnsetIsAlsoGenerated(t *testing.T) {
+// configured, and both leave it empty. Neither is an error.
+func TestMissingKeyUnsetIsAlsoEmpty(t *testing.T) {
 	setEnv(t, nil)
 	unsetEnv(t, "ADMIN_KEY", "LABS_KEY_APPLAB")
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
 		t.Fatalf("a configuration with no key variable set should be usable, problems: %v", cfg.Problems)
 	}
-	if !cfg.GeneratedKey || cfg.Envs[0].APIKey == "" {
-		t.Errorf("generated=%v key=%q, want a generated key", cfg.GeneratedKey, cfg.Envs[0].APIKey)
+	if got := cfg.Envs[0].APIKey; got != "" {
+		t.Errorf("api key = %q, want empty", got)
 	}
 }
 
-// A configured key is used as it is. The generated one is a fallback, not a
-// replacement for a value someone set on purpose.
+// A configured key is used as it is. Nothing stands in for it when it is
+// absent, so the two cases stay distinct: configured or empty.
 func TestConfiguredKeyIsUsedVerbatim(t *testing.T) {
 	setEnv(t, nil) // the baseline's testKey
 	cfg := mustLoad(t)
-	if cfg.GeneratedKey {
-		t.Error("GeneratedKey = true for a configuration that set a key")
-	}
 	if cfg.Envs[0].APIKey != testKey {
 		t.Errorf("api key = %q, want %q", cfg.Envs[0].APIKey, testKey)
-	}
-}
-
-// Every environment of a load takes the same generated key — the one value that
-// goes into a dispatch and is therefore what the environment comes up holding —
-// and two loads do not agree, which is what makes it per-process rather than
-// per-deployment.
-func TestGeneratedKeyIsSharedWithinALoadAndFreshAcrossLoads(t *testing.T) {
-	setEnv(t, map[string]string{
-		"LABS_APPLAB_REPOS":     "o/applab",
-		"LABS_SANDBOXLAB_REPOS": "o/sandboxlab",
-		"ADMIN_KEY":             "",
-	})
-	unsetEnv(t, "LABS_KEY_APPLAB", "LABS_KEY_SANDBOXLAB")
-	first := mustLoad(t)
-	second := mustLoad(t)
-
-	if len(first.Envs) != 2 {
-		t.Fatalf("want two environments, got %d", len(first.Envs))
-	}
-	if first.Envs[0].APIKey != first.Envs[1].APIKey {
-		t.Error("environments in one load disagree on the key; a dispatch and the environment it starts must match")
-	}
-	if first.Envs[0].APIKey == "" {
-		t.Error("the generated key is empty")
-	}
-	if first.Envs[0].APIKey == second.Envs[0].APIKey {
-		t.Error("two loads generated the same key; it is meant to be random per process")
 	}
 }
 
