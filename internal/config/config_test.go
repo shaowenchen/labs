@@ -12,21 +12,34 @@ import (
 // setEnv sets the variables a valid single-applab-repo configuration needs, so
 // a test only has to override the one it is about. sandboxlab is explicitly off
 // in the baseline, so a test about applab sees exactly one environment.
+//
+// LABS_ACTION_API_KEY is part of the baseline so tests that are not about the
+// key do not have to think about it — a configuration with no key is valid, it
+// just gets a generated one, which would make every assertion about a specific
+// key sit next to a value no test wrote.
 func setEnv(t *testing.T, overrides map[string]string) {
 	t.Helper()
 	base := map[string]string{
-		"LABS_GITHUB_TOKEN":     "token",
+		"GITHUB_TOKEN":          "token",
 		"LABS_APPLAB_REPOS":     "o/applab",
 		"LABS_SANDBOXLAB_REPOS": "",
 		"LABS_DOMAIN_SUFFIX":    "example.com",
+		"LABS_ACTION_API_KEY":   testKey,
 	}
 	for k, v := range override(base, overrides) {
 		t.Setenv(k, v)
 	}
 }
 
+// testKey is the value the baseline configuration is called with. A constant,
+// so a test can say which key it expects without restating it — and so the
+// tests do not accidentally depend on any built-in default, which is the thing
+// this repository no longer has.
+const testKey = "test-key"
+
 // unsetEnv removes a variable for the life of the test, so a test can exercise
-// the "neither set nor empty" case — the one that takes the built-in default.
+// the "neither set nor empty" case — including LABS_ACTION_API_KEY, which has
+// no default to take.
 func unsetEnv(t *testing.T, keys ...string) {
 	t.Helper()
 	for _, k := range keys {
@@ -106,15 +119,15 @@ func TestRepositoryBecomesAnEnvironment(t *testing.T) {
 	if e.Domain != "applab.example.com" {
 		t.Errorf("domain = %q, want applab.example.com (derived from the suffix)", e.Domain)
 	}
-	// No key was configured, so labs falls back to the fixed default — the same
-	// value on every run and across every restart, which is what lets it reach
-	// an environment it did not itself just dispatch.
-	if e.APIKey != defaultAPIKey {
-		t.Errorf("api key = %q, want the default %q", e.APIKey, defaultAPIKey)
+	// The key the deployment configured is used as-is — there is no built-in
+	// one. It is the same value on every run and across every restart, which is
+	// what lets labs reach an environment it did not itself just dispatch.
+	if e.APIKey != testKey {
+		t.Errorf("api key = %q, want the configured %q", e.APIKey, testKey)
 	}
 	// The key is handed over at dispatch, so the environment comes up holding it.
-	if got := e.DispatchInputs("4")["api_key"]; got != defaultAPIKey {
-		t.Errorf("dispatch api_key = %q, want the default", got)
+	if got := e.DispatchInputs("4")["api_key"]; got != testKey {
+		t.Errorf("dispatch api_key = %q, want the configured key", got)
 	}
 	if e.Capacity != defaultEnvSlots || len(e.Slots) != defaultEnvSlots {
 		t.Errorf("capacity = %d, slots = %d, want %d of each", e.Capacity, len(e.Slots), defaultEnvSlots)
@@ -207,18 +220,16 @@ func TestConfiguredKeyIsUsedAsIs(t *testing.T) {
 	}
 }
 
-// A generated key is carried in the dispatch, so the environment comes up with
-// the key labs holds.
-// The default key is carried in the dispatch for applab, so the environment
-// comes up holding the key labs will mint per-app keys with.
-func TestDefaultKeyIsCarriedInTheApplabDispatch(t *testing.T) {
+// The configured key is carried in the dispatch, so the environment comes up
+// holding the key labs holds.
+func TestConfiguredKeyIsCarriedInTheApplabDispatch(t *testing.T) {
 	setEnv(t, nil)
 	e := mustLoad(t).Envs[0]
-	if e.APIKey != defaultAPIKey {
-		t.Fatalf("api key = %q, want the default", e.APIKey)
+	if e.APIKey != testKey {
+		t.Fatalf("api key = %q, want the configured one", e.APIKey)
 	}
-	if got := e.DispatchInputs("4")["api_key"]; got != defaultAPIKey {
-		t.Errorf("dispatch api_key = %q, want the default", got)
+	if got := e.DispatchInputs("4")["api_key"]; got != testKey {
+		t.Errorf("dispatch api_key = %q, want the configured key", got)
 	}
 }
 
@@ -270,13 +281,13 @@ func TestEnvID(t *testing.T) {
 // A missing token does not stop the service, and it is the one thing a
 // deployment must set — the repositories have defaults.
 func TestLoadWithNothingSetStillReturnsAConfig(t *testing.T) {
-	unsetEnv(t, "LABS_GITHUB_TOKEN", "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS", "LABS_LISTEN")
+	unsetEnv(t, "GITHUB_TOKEN", "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS", "LABS_LISTEN")
 	cfg := mustLoad(t)
 	if cfg.Usable() {
 		t.Fatal("a configuration with no token reported itself usable")
 	}
-	if !hasProblem(cfg.Problems, "LABS_GITHUB_TOKEN") {
-		t.Errorf("problems do not mention LABS_GITHUB_TOKEN: %v", cfg.Problems)
+	if !hasProblem(cfg.Problems, "GITHUB_TOKEN") {
+		t.Errorf("problems do not mention GITHUB_TOKEN: %v", cfg.Problems)
 	}
 	if cfg.Listen == "" {
 		t.Error("Listen must still resolve so the server can bind")
@@ -299,18 +310,20 @@ func TestLoadFailsOnAnUnreadableDuration(t *testing.T) {
 }
 
 func TestMissingTokenIsAProblem(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_GITHUB_TOKEN": ""})
+	setEnv(t, map[string]string{"GITHUB_TOKEN": ""})
 	cfg := mustLoad(t)
-	if cfg.Usable() || !hasProblem(cfg.Problems, "LABS_GITHUB_TOKEN") {
-		t.Fatalf("want a problem naming LABS_GITHUB_TOKEN, got %v", cfg.Problems)
+	if cfg.Usable() || !hasProblem(cfg.Problems, "GITHUB_TOKEN") {
+		t.Fatalf("want a problem naming GITHUB_TOKEN, got %v", cfg.Problems)
 	}
 }
 
 // LABS_REPOS has a default — the two projects this service drives — so a
-// deployment running both needs no variable at all.
+// deployment running both needs no repository variable at all. It is not the
+// whole configuration: the key has no default, so one is set here.
 func TestRepoDefaultsToTheTwoProjects(t *testing.T) {
 	unsetEnv(t, "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS")
-	t.Setenv("LABS_GITHUB_TOKEN", "token")
+	t.Setenv("GITHUB_TOKEN", "token")
+	t.Setenv("LABS_ACTION_API_KEY", testKey)
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
 		t.Fatalf("a deployment with neither repository variable should be usable, problems: %v", cfg.Problems)
@@ -334,17 +347,82 @@ func TestBadRepoIsAProblem(t *testing.T) {
 	}
 }
 
-// A key left out is not a problem: labs falls back to the fixed default and
-// hands it to the environment in the dispatch. That is what lets a deployment
-// run on a token and a repo list alone.
-func TestMissingKeyFallsBackToTheDefaultNotAProblem(t *testing.T) {
-	setEnv(t, map[string]string{"LABS_KEY_APPLAB": ""})
+// A key left out is generated, not an error. There is no built-in key — a value
+// checked into this repository is one anyone who can read it could call a
+// deployment with — so the service mints one for the process instead. What that
+// costs is that it reaches only environments this process started, which the
+// service says at startup.
+func TestMissingKeyIsGenerated(t *testing.T) {
+	setEnv(t, map[string]string{"LABS_ACTION_API_KEY": ""})
+	unsetEnv(t, "LABS_KEY_APPLAB")
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
-		t.Fatalf("a configuration without a key should still be usable, problems: %v", cfg.Problems)
+		t.Fatalf("a configuration without a key should be usable, problems: %v", cfg.Problems)
 	}
-	if cfg.Envs[0].APIKey != defaultAPIKey {
-		t.Fatalf("want the default key, got %+v", cfg.Envs[0])
+	if !cfg.GeneratedKey {
+		t.Error("GeneratedKey = false for a configuration that set no key")
+	}
+	got := cfg.Envs[0].APIKey
+	if got == "" {
+		t.Fatal("api key is empty; a missing key should be generated, not left blank")
+	}
+	if got == testKey {
+		t.Errorf("api key = %q, want a generated one rather than the value some other test set", got)
+	}
+}
+
+// Absence and emptiness are the same thing here: both mean no key was
+// configured, and both get a generated one. Neither is an error any more.
+func TestMissingKeyUnsetIsAlsoGenerated(t *testing.T) {
+	setEnv(t, nil)
+	unsetEnv(t, "LABS_ACTION_API_KEY", "LABS_KEY_APPLAB")
+	cfg := mustLoad(t)
+	if !cfg.Usable() {
+		t.Fatalf("a configuration with no key variable set should be usable, problems: %v", cfg.Problems)
+	}
+	if !cfg.GeneratedKey || cfg.Envs[0].APIKey == "" {
+		t.Errorf("generated=%v key=%q, want a generated key", cfg.GeneratedKey, cfg.Envs[0].APIKey)
+	}
+}
+
+// A configured key is used as it is. The generated one is a fallback, not a
+// replacement for a value someone set on purpose.
+func TestConfiguredKeyIsUsedVerbatim(t *testing.T) {
+	setEnv(t, nil) // the baseline's testKey
+	cfg := mustLoad(t)
+	if cfg.GeneratedKey {
+		t.Error("GeneratedKey = true for a configuration that set a key")
+	}
+	if cfg.Envs[0].APIKey != testKey {
+		t.Errorf("api key = %q, want %q", cfg.Envs[0].APIKey, testKey)
+	}
+}
+
+// Every environment of a load takes the same generated key — the one value that
+// goes into a dispatch and is therefore what the environment comes up holding —
+// and two loads do not agree, which is what makes it per-process rather than
+// per-deployment.
+func TestGeneratedKeyIsSharedWithinALoadAndFreshAcrossLoads(t *testing.T) {
+	setEnv(t, map[string]string{
+		"LABS_APPLAB_REPOS":     "o/applab",
+		"LABS_SANDBOXLAB_REPOS": "o/sandboxlab",
+		"LABS_ACTION_API_KEY":   "",
+	})
+	unsetEnv(t, "LABS_KEY_APPLAB", "LABS_KEY_SANDBOXLAB")
+	first := mustLoad(t)
+	second := mustLoad(t)
+
+	if len(first.Envs) != 2 {
+		t.Fatalf("want two environments, got %d", len(first.Envs))
+	}
+	if first.Envs[0].APIKey != first.Envs[1].APIKey {
+		t.Error("environments in one load disagree on the key; a dispatch and the environment it starts must match")
+	}
+	if first.Envs[0].APIKey == "" {
+		t.Error("the generated key is empty")
+	}
+	if first.Envs[0].APIKey == second.Envs[0].APIKey {
+		t.Error("two loads generated the same key; it is meant to be random per process")
 	}
 }
 
@@ -391,7 +469,7 @@ func TestZeroSlotsIsAProblem(t *testing.T) {
 // Every problem is reported at once, so one restart shows everything to fix
 // rather than one thing per attempt.
 func TestAllProblemsAreReportedTogether(t *testing.T) {
-	t.Setenv("LABS_GITHUB_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("LABS_ENV_SLOTS", "0")
 	cfg := mustLoad(t)
 	if len(cfg.Problems) < 2 {
@@ -449,11 +527,10 @@ func TestSessionTTLDefault(t *testing.T) {
 	}
 }
 
-// A sandboxlab repository gets its kind, path, and template, and falls back to
-// the same fixed default key as applab — one key for every kind, sent in the
-// dispatch, so a sandboxlab environment comes up holding the key labs calls it
-// with.
-func TestSandboxlabUsesTheDefaultKey(t *testing.T) {
+// A sandboxlab repository gets its kind, path, and template, and takes the same
+// configured key as applab — one key for every kind, sent in the dispatch, so a
+// sandboxlab environment comes up holding the key labs calls it with.
+func TestSandboxlabTakesTheConfiguredKey(t *testing.T) {
 	setEnv(t, map[string]string{
 		"LABS_APPLAB_REPOS":        "",
 		"LABS_SANDBOXLAB_REPOS":    "o/sandboxlab",
@@ -462,14 +539,14 @@ func TestSandboxlabUsesTheDefaultKey(t *testing.T) {
 	})
 	cfg := mustLoad(t)
 	if !cfg.Usable() {
-		t.Fatalf("a sandboxlab environment with no key should be usable, problems: %v", cfg.Problems)
+		t.Fatalf("a fully configured sandboxlab environment should be usable, problems: %v", cfg.Problems)
 	}
 	e := cfg.Envs[0]
-	if e.APIKey != defaultAPIKey {
-		t.Fatalf("api key = %q, want the default %q", e.APIKey, defaultAPIKey)
+	if e.APIKey != testKey {
+		t.Fatalf("api key = %q, want the configured %q", e.APIKey, testKey)
 	}
-	if got := e.DispatchInputs("4")["api_key"]; got != defaultAPIKey {
-		t.Errorf("sandboxlab dispatch api_key = %q, want the default", got)
+	if got := e.DispatchInputs("4")["api_key"]; got != testKey {
+		t.Errorf("sandboxlab dispatch api_key = %q, want the configured key", got)
 	}
 }
 
@@ -506,8 +583,8 @@ func TestSandboxlabDispatchCarriesTheKeyAndDomain(t *testing.T) {
 		"LABS_DOMAIN_SANDBOXLAB": "sandboxlab-1.example.com",
 	})
 	inputs := mustLoad(t).Envs[0].DispatchInputs("4")
-	if inputs["api_key"] != defaultAPIKey {
-		t.Errorf("sandboxlab dispatch api_key = %q, want the default", inputs["api_key"])
+	if inputs["api_key"] != testKey {
+		t.Errorf("sandboxlab dispatch api_key = %q, want the configured key", inputs["api_key"])
 	}
 	if inputs["domain"] != "sandboxlab-1.example.com" {
 		t.Errorf("domain = %v, want the configured one", inputs["domain"])
@@ -538,9 +615,9 @@ func TestEmptyDomainSendsNoDomainInput(t *testing.T) {
 	}
 }
 
-// LABS_ACTION_API_KEY pins one key for every action, which is how a deployment
-// gives a single fixed value rather than relying on the built-in default. It
-// reaches every kind the same way — sent in the dispatch — so one key is all
+// LABS_ACTION_API_KEY is the one key a deployment is called with, which is how
+// a single fixed value covers every environment rather than one per repository.
+// It reaches every kind the same way — sent in the dispatch — so one key is all
 // that is needed to call any of them.
 func TestOneActionKeyForEveryEnvironment(t *testing.T) {
 	setEnv(t, map[string]string{
@@ -611,7 +688,7 @@ func TestEachKindHasItsOwnRepoVariable(t *testing.T) {
 // bug the single shared list caused.
 func TestSettingOneKindLeavesTheOtherAlone(t *testing.T) {
 	unsetEnv(t, "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS")
-	t.Setenv("LABS_GITHUB_TOKEN", "token")
+	t.Setenv("GITHUB_TOKEN", "token")
 	t.Setenv("LABS_APPLAB_REPOS", "o/myapplab")
 	cfg := mustLoad(t)
 	byKind := map[string]string{}
@@ -635,7 +712,7 @@ func TestSettingOneKindLeavesTheOtherAlone(t *testing.T) {
 func TestReposSource(t *testing.T) {
 	t.Run("neither set takes the default", func(t *testing.T) {
 		unsetEnv(t, "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS")
-		t.Setenv("LABS_GITHUB_TOKEN", "token")
+		t.Setenv("GITHUB_TOKEN", "token")
 		got := mustLoad(t).ReposSource
 		if got["applab"] != "default" || got["sandboxlab"] != "default" {
 			t.Errorf("ReposSource = %v, want default for both", got)
@@ -644,7 +721,7 @@ func TestReposSource(t *testing.T) {
 
 	t.Run("one set is named, the other stays default", func(t *testing.T) {
 		unsetEnv(t, "LABS_APPLAB_REPOS", "LABS_SANDBOXLAB_REPOS")
-		t.Setenv("LABS_GITHUB_TOKEN", "token")
+		t.Setenv("GITHUB_TOKEN", "token")
 		t.Setenv("LABS_SANDBOXLAB_REPOS", "o/sb")
 		got := mustLoad(t).ReposSource
 		if got["sandboxlab"] != "LABS_SANDBOXLAB_REPOS" {

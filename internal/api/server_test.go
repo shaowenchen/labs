@@ -307,7 +307,7 @@ func TestWrongMethodIsRefused(t *testing.T) {
 // bare "no environment is available" — it must say what to set, in the response.
 func TestCreateLabWhenUnconfiguredReturnsTheProblems(t *testing.T) {
 	cfg := testConfig()
-	cfg.Problems = []string{"LABS_GITHUB_TOKEN is not set", "LABS_REPOS is not set"}
+	cfg.Problems = []string{"GITHUB_TOKEN is not set", "LABS_REPOS is not set"}
 	s := newTestServer(t, &fakeSvc{}, cfg, 5)
 
 	w := do(t, s, "POST", "/api/v1/labs", "{}")
@@ -327,7 +327,7 @@ func TestCreateLabWhenUnconfiguredReturnsTheProblems(t *testing.T) {
 // tell "not set up yet" from "set up but nothing is running".
 func TestConfigReportsConfiguredState(t *testing.T) {
 	cfg := testConfig()
-	cfg.Problems = []string{"LABS_GITHUB_TOKEN is not set"}
+	cfg.Problems = []string{"GITHUB_TOKEN is not set"}
 	s := newTestServer(t, &fakeSvc{}, cfg, 5)
 
 	got := data[map[string]any](t, do(t, s, "GET", "/api/v1/config", ""))
@@ -342,7 +342,7 @@ func TestConfigReportsConfiguredState(t *testing.T) {
 // readyz carries the same verdict, so a probe sees it too.
 func TestReadyzReportsUnconfigured(t *testing.T) {
 	cfg := testConfig()
-	cfg.Problems = []string{"LABS_GITHUB_TOKEN is not set"}
+	cfg.Problems = []string{"GITHUB_TOKEN is not set"}
 	s := newTestServer(t, &fakeSvc{readyAny: true}, cfg, 5)
 
 	w := do(t, s, "GET", "/readyz", "")

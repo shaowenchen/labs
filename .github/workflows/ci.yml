@@ -113,7 +113,7 @@ jobs:
   #   VERCEL_ORG_ID       from `vercel link`, in .vercel/project.json
   #   VERCEL_PROJECT_ID   the same file
   #
-  # The service's own settings — LABS_GITHUB_TOKEN and the rest — are read from
+  # The service's own settings — GITHUB_TOKEN and the rest — are read from
   # the Vercel project's environment variables at runtime, not from here, so
   # they are set in the Vercel dashboard rather than in this repository.
   vercel:

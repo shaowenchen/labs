@@ -5,7 +5,7 @@
 #
 # It needs one thing from you and does nothing without it:
 #
-#   LABS_GITHUB_TOKEN   a token with Actions: write on the repositories
+#   GITHUB_TOKEN   a token with Actions: write on the repositories
 #
 # Everything else takes the default — the repositories (both projects), the key
 # both sides use, and the domains. Set LABS_APPLAB_REPOS or LABS_SANDBOXLAB_REPOS
@@ -17,7 +17,7 @@
 # polls for it and says so as it waits.
 set -euo pipefail
 
-: "${LABS_GITHUB_TOKEN:?set LABS_GITHUB_TOKEN to a token with Actions: write}"
+: "${GITHUB_TOKEN:?set GITHUB_TOKEN to a token with Actions: write}"
 
 PORT="${LABS_SMOKE_PORT:-18080}"
 BASE="http://127.0.0.1:${PORT}"

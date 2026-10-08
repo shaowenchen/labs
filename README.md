@@ -161,20 +161,26 @@ on the domain as well) plus a second repository, not a labs setting.
 
 ## What you have to do in the other repositories
 
-**One key, sent in every dispatch.** labs calls every environment with one fixed
-key — `LABS_ACTION_API_KEY` if you set it, otherwise the built-in default
-`labs-default-key` — and passes it as the `api_key` input on every dispatch.
-That one key is all it takes to drive any lab action: applab's workflow threads
-it through (`inputs.api_key || secrets.APPLAB_API_KEY`), and the debugger
-environment comes up holding it. There is nothing per-repository to configure.
+**One key, sent in every dispatch.** labs calls every environment with one key —
+`LABS_ACTION_API_KEY` when it is set, otherwise one it generated — and passes it
+as the `api_key` input on every dispatch. That one key, on both sides, is all it
+takes to drive any lab action: both workflows thread it through
+(`api_key: ${{ inputs.api_key || secrets.<THEIR_SECRET> }}`), so the environment
+comes up holding the key labs will call it with. Set it to the same value as each
+repository's own secret — `APPLAB_API_KEY` for applab, `ADMIN_KEY` for
+sandboxlab — and one key covers both kinds.
 
-**Do the same on the sandboxlab side.** Its debugger workflow must take `api_key`
-from the dispatch (`api_key: ${{ inputs.api_key }}` in its `uses: ./action`
-block, alongside the inputs it already declares). Until it does, a dispatch
-carrying `api_key` is rejected outright — GitHub answers `422` and starts no run
-— so sandboxlab's key currently comes from whatever `SANDBOXLAB_API_KEY` its
-workflow reads instead. Point both at the same value and one key covers both
-kinds.
+**There is no built-in key.** labs used to fall back to a constant compiled into
+this repository, which let a deployment run with nothing configured. It is gone:
+a key checked into a repository is not a secret, so anyone who could read it
+could call any deployment that had not set one. Instead, `LABS_ACTION_API_KEY` is
+optional — leave it out and the service generates a random one at startup, so a
+deployment can come up with no key configured at all and still hand out labs it
+started itself. What that costs is reach: a key that is random per process cannot
+reach an environment an earlier process brought up, nor one started by hand, so
+set the variable to the repositories' key when you want labs to reach an
+environment already running. A per-environment `LABS_KEY_<ID>` still works for
+the one environment that wants its own.
 
 The other thing each environment needs is a named Cloudflare tunnel whose
 hostname matches the domain you configured here, and — for applab —
@@ -193,10 +199,13 @@ would change only the sandboxlab driver.
 **Either one — one line, for blue/green.** The `concurrency.group` change above,
 which lets two environments of the same kind run at once.
 
-**If you would rather not use the shared key** — for instance because you rotate
-a key of your own — set `LABS_ACTION_API_KEY` (or `LABS_KEY_<ID>` for one environment)
-to it, and put the same value in that repository's secret. applab takes it from
-the dispatch either way; sandboxlab needs the secret set to match.
+**The key is a pair, and both halves have to match.** `LABS_ACTION_API_KEY`
+(or `LABS_KEY_<ID>` for one environment) is the value labs sends at dispatch;
+the repository's own secret — `APPLAB_API_KEY` or `ADMIN_KEY` — is what its
+workflow falls back to when a dispatch carries nothing. They are not
+alternatives: the environment is called with whatever the dispatch carried, so a
+value in only one of the two places is a live environment reachable by only one
+of the two sides.
 
 ## Configuration
 
@@ -212,7 +221,7 @@ There is **one variable per kind**, and which variable a repository comes from
 is what decides its kind:
 
 ```bash
-LABS_GITHUB_TOKEN=...                                # the only variable required
+GITHUB_TOKEN=...                                # the only variable required
 LABS_APPLAB_REPOS=shaowenchen/applab                 # applab, defaults to this
 LABS_SANDBOXLAB_REPOS=shaowenchen/sandboxlab         # sandboxlab, defaults to this
 ```
@@ -224,24 +233,29 @@ it should. With one variable each, configuring applab can never hide sandboxlab.
 Leave a variable unset to take its default; set it to empty to turn that kind
 off on purpose.
 
-That is the whole configuration. The **address** defaults to the hostname each
-project's own debugger workflow starts on (`applab-1.chenshaowen.com`,
-`sandboxlab-1.chenshaowen.com`), and the **key** defaults to one shared value,
-handed to each environment at dispatch. Point either at your own with the
-overrides below.
+That is the whole configuration, except the key. The **address** defaults to the
+hostname each project's own debugger workflow starts on
+(`applab-1.chenshaowen.com`, `sandboxlab-1.chenshaowen.com`); the **key** is the
+one thing that is neither derived nor required — leave it out and a random one is
+generated for the process, set it and that value is used.
 
-Three optional overrides. The first two are named for the repository with its
-name uppercased (`APPLAB` for `shaowenchen/applab`):
+`LABS_ACTION_API_KEY` is the exception to everything above: the repository list
+and the address can be left out and derived, the key cannot be — it is either
+computed (randomly, per process) or configured. A generated key is what lets a
+deployment run with nothing set; a configured one is what lets it reach
+environments it did not start itself. The overrides below are named for the
+repository with its name uppercased (`APPLAB` for `shaowenchen/applab`).
 
-- **`LABS_ACTION_API_KEY`** — the one key labs calls every environment with, instead of
-  the built-in `labs-default-key`. See "What you have to do in the other
-  repositories" above for how each project is given it.
+- **`LABS_ACTION_API_KEY`** — optional. Unset, the service generates a random key
+  at startup and says so in its log; set, that value is what labs calls every
+  environment with. There is no built-in key. See "What you have to do in the
+  other repositories" above for how each project is given it.
 - **`LABS_DOMAIN_APPLAB`** (or `LABS_DOMAIN_SUFFIX`, a shared suffix under which
   a repository named `applab` is served at `applab.<suffix>`) — set the address
   instead of discovering it, so an environment is reachable before its run has
   printed anything.
 - **`LABS_KEY_APPLAB`** — use a different key for this one environment, instead
-  of the shared one.
+  of `LABS_ACTION_API_KEY`.
 
 Whatever the address, it must be the hostname of a **named** Cloudflare tunnel,
 which is stable across runs; a quick tunnel is assigned a new hostname each time.
@@ -262,11 +276,13 @@ configured, and nothing is started — no environment, and no dispatch.
 
 Two things are worth knowing at the top:
 
-- **The key is fixed, not discovered.** Neither control plane reports its key
-  over its unauthenticated `/api/v1/config` (nor should it), so labs cannot read
-  it — it calls every environment with one fixed value, `LABS_ACTION_API_KEY` or
-  the built-in default. Fixed rather than random is what lets labs reach an
-  environment it did not itself just dispatch.
+- **The key is neither fixed nor discovered.** Neither control plane reports its
+  key over its unauthenticated `/api/v1/config` (nor should it), so labs cannot
+  read it — it calls every environment with `LABS_ACTION_API_KEY` when that is
+  set, and with a key it generated itself when it is not. A generated key is
+  random per process, so it reaches only the environments this process started;
+  setting the variable is what lets labs reach an environment it did not itself
+  just dispatch.
 - **The domain must be stable.** labs reaches an environment at the hostname you
   configure, so it must be the same across runs — which a *named* Cloudflare
   tunnel gives, and a quick tunnel does not (it is assigned a new hostname each
@@ -358,11 +374,18 @@ The project is `shaowenchens-projects/labs`; `VERCEL_ORG_ID` is the id of the
 `shaowenchens-projects` team, so both ids come from linking this repository to
 that project.
 
-The service's own settings — `LABS_GITHUB_TOKEN`, the repositories, the key — are
+The service's own settings — `GITHUB_TOKEN`, the repositories, the key — are
 the Vercel project's environment variables, set in the dashboard. There is no
 `.env` in the deployment. Set `LABS_TRUSTED_PROXY=true` there: every request
 reaches the service through Vercel's proxy and its port is not reachable
 directly, which is the same case the compose file makes for Caddy.
+
+**Set `LABS_ACTION_API_KEY` here; do not leave it to be generated.** A generated
+key is random per process, and on Vercel every cold start is a new process — so
+each instance would mint its own key, and an environment one instance started
+would refuse every other. It also cannot reach an environment an earlier
+instance brought up. Setting the variable, to the same value the repositories
+are given, is what makes the key stable across instances and restarts.
 
 **What Vercel costs this service.** Read this before deploying there, because it
 is the shape the service was built against rather than a detail to find later.

@@ -11,12 +11,16 @@
 // path it is served under, the workflow that brings it up — is derived from its
 // name. The address is derived too, defaulting to the hostname each project's
 // own workflow declares as a choice. What is left is one key, shared by every
-// environment, and it has a built-in default: LABS_ACTION_API_KEY, or
+// environment when none of them names its own: LABS_ACTION_API_KEY, or
 // LABS_KEY_<ID> for the one environment that wants its own, where <ID> is the
-// repository name uppercased.
+// repository name uppercased. Leave it unset and a random one is generated for
+// the process — there is no built-in value, because a key checked into this
+// repository is one anyone who can read it could call a deployment with.
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"strconv"
@@ -42,7 +46,9 @@ type Config struct {
 	LogLevel string
 
 	// GitHubToken authenticates the dispatcher. It needs Actions: write on
-	// every repository in Repos.
+	// every repository in Repos. It comes from GITHUB_TOKEN, which is the name a
+	// CI environment already sets, so a deployment on a runner needs no second
+	// copy of the same credential.
 	GitHubToken string
 
 	// GitHubAPI is the REST base. Overridable so tests and GitHub Enterprise
@@ -114,10 +120,10 @@ type Config struct {
 	// LABS_DOMAIN_<ID>.
 	DomainSuffix string
 
-	// APIKey is the key every environment falls back to when it has none of its
-	// own, from LABS_ACTION_API_KEY. It is how a deployment pins one fixed key
-	// for every kind rather than relying on the built-in default. Empty means the
-	// built-in default is used.
+	// APIKey is the key every environment takes when it has none of its own, from
+	// LABS_ACTION_API_KEY. It is the one key a deployment is called with, rather
+	// than one per repository. When it is not set, Load generates a random one —
+	// see randomKey — so this is always non-empty on a loaded Config.
 	APIKey string
 
 	// Envs are the environments, one per repository, each with its key resolved.
@@ -128,6 +134,12 @@ type Config struct {
 	// that is not shaped right. They do not stop the service. It starts, serves
 	// /healthz, and reports them through its log, /readyz and /api/v1/config.
 	Problems []string
+
+	// GeneratedKey reports that no key was configured and one was generated for
+	// this process. It is worth a line at startup: the key then reaches only
+	// environments this process started, which is a difference an operator wants
+	// to know about rather than discover from a lab that will not open.
+	GeneratedKey bool
 }
 
 // Load reads the configuration from the environment.
@@ -149,11 +161,22 @@ func Load() (Config, error) {
 
 	setString(&cfg.Listen, "LABS_LISTEN", "")
 	setString(&cfg.LogLevel, "LABS_LOG_LEVEL", "info")
-	setString(&cfg.GitHubToken, "LABS_GITHUB_TOKEN", "")
+	setString(&cfg.GitHubToken, "GITHUB_TOKEN", "")
 	setString(&cfg.GitHubAPI, "LABS_GITHUB_API", "https://api.github.com")
 	setString(&cfg.DispatchSessionHours, "LABS_DISPATCH_SESSION_HOURS", "4")
 	setString(&cfg.DomainSuffix, "LABS_DOMAIN_SUFFIX", "")
 	setString(&cfg.APIKey, "LABS_ACTION_API_KEY", "")
+	// No key configured: mint one for this process. Both sides of a dispatch read
+	// the key from the same place, so leaving it unset is the "I do not care what
+	// the key is" case — a deployment that would rather not keep a secret in its
+	// environment at all. It costs the one property a configured key has: a random
+	// key is not the key a lab that is already up was started with, so it reaches
+	// only environments this process dispatched itself. See the note on
+	// randomKey for why there is no compiled-in default in its place.
+	if cfg.APIKey == "" {
+		cfg.APIKey = randomKey()
+		cfg.GeneratedKey = true
+	}
 
 	cfg.Listen = resolveListen(cfg.Listen)
 
@@ -274,7 +297,7 @@ func (c Config) Validate() []string {
 		add("LABS_SESSION_TTL must be positive, got %s", c.SessionTTL)
 	}
 	if c.GitHubToken == "" {
-		add("LABS_GITHUB_TOKEN is not set: the service dispatches workflows, which needs a token with Actions: write on the repositories it runs")
+		add("GITHUB_TOKEN is not set: the service dispatches workflows, which needs a token with Actions: write on the repositories it runs")
 	}
 	// Each repository is named with the variable it came from, so a bad entry
 	// points at the variable to fix rather than at whichever list it landed in.
@@ -319,11 +342,6 @@ func (c Config) validateEnv(e model.Env) []string {
 		add("environment %q has base_path %q, which must be empty or start with / and not end with one", e.ID, e.BasePath)
 	case e.Domain != "" && !validHost(e.Domain):
 		add("environment %q has domain %q, which must be a bare hostname with no scheme or path (or leave it out and let the address be read from the environment's own run log)", e.ID, e.Domain)
-	case e.APIKey == "":
-		// Unreachable while buildEnvs always resolves a key — kept as a guard,
-		// so a change that let one through is a problem rather than a blank
-		// credential.
-		add("environment %q has no key: set LABS_ACTION_API_KEY, or LABS_KEY_%s for this one", e.ID, e.ID)
 	case e.Capacity <= 0:
 		add("environment %q has capacity %d, which must be positive", e.ID, e.Capacity)
 	}
@@ -425,14 +443,17 @@ type envSpec struct {
 	source string
 }
 
-// buildEnvs turns the repository list into environments. fallbackKey is the key
-// an environment with none of its own is called with: LABS_ACTION_API_KEY when
-// it is set, otherwise the built-in default.
-func buildEnvs(specs []envSpec, slots int, domainSuffix, ref, fallbackKey string) []model.Env {
+// buildEnvs turns the repository list into environments. sharedKey is the key
+// an environment with none of its own is called with, from LABS_ACTION_API_KEY
+// or generated by Load.
+//
+// It is never empty: Load fills in a random one when the variable is unset, so
+// an environment that names no key of its own still gets one. That key is what
+// goes into every dispatch, so both sides of a lab are brought up holding the
+// same value — which is the whole reason it is resolved here, once, rather than
+// per request.
+func buildEnvs(specs []envSpec, slots int, domainSuffix, ref, sharedKey string) []model.Env {
 	envs := make([]model.Env, 0, len(specs))
-	if fallbackKey == "" {
-		fallbackKey = defaultAPIKey
-	}
 	for _, spec := range specs {
 		kind, repo := spec.kind, spec.repo
 		name := repoName(repo)
@@ -471,13 +492,13 @@ func buildEnvs(specs []envSpec, slots int, domainSuffix, ref, fallbackKey string
 			APIKey:   strings.TrimSpace(os.Getenv("LABS_KEY_" + id)),
 		}
 		if env.APIKey == "" {
-			// One fixed key for every environment rather than one minted per
-			// process: the value is the same on every dispatch and across every
-			// restart, so labs can call whatever environment is actually up,
-			// including one it did not itself just dispatch. LABS_ACTION_API_KEY
-			// pins it for the deployment; the built-in default is the same idea
-			// with nothing set.
-			env.APIKey = fallbackKey
+			// One key for every environment rather than one minted per dispatch:
+			// the value is the same across every restart of this process, so labs
+			// can call whatever environment is actually up, including one it did
+			// not itself just dispatch. LABS_ACTION_API_KEY is that key when it is
+			// set; otherwise Load generated one, which is fixed for this process
+			// but not across restarts.
+			env.APIKey = sharedKey
 		}
 		envs = append(envs, env)
 	}
@@ -612,21 +633,33 @@ func splitList(v string) []string {
 	return out
 }
 
-// defaultAPIKey is the key labs calls an environment with when none is
-// configured — the same value on every dispatch, and across every restart.
+// randomKey mints the key used when LABS_ACTION_API_KEY is unset: 32 bytes of
+// crypto/rand as hex, the same shape as the session ids this service hands out.
 //
-// Fixed rather than generated is the point: labs keeps no persistent state, so
-// a generated key would change on every restart and it could then only reach an
-// environment it had itself dispatched moments earlier. A constant reaches any
-// environment that was brought up holding it.
+// There is deliberately no compiled-in default in its place. The service used to
+// carry a constant ("labs-default-key") so a deployment could run with nothing
+// set, and that was the mistake: a value checked into this repository is not a
+// secret, so anyone who could read it could call any deployment that had not set
+// a key of its own, across every restart, with one value.
 //
-// It is non-secret by construction — it is checked into this repository — so it
-// is compiled in rather than required as configuration. Set LABS_ACTION_API_KEY
-// to use a key of your own, or LABS_KEY_<ID> for one environment only.
-//
-// It is the same value everywhere so a deployment needs no variables at all:
-// labs sends it as the dispatch's api_key, and each project comes up holding it.
-const defaultAPIKey = "labs-default-key"
+// A generated key is random per process, which is a real trade and the reason
+// one is logged at startup. Both sides of a dispatch read the key from the same
+// place, so labs starting an environment and labs calling it always agree — but
+// only for the environments this process started. A key that changed on restart
+// cannot reach an environment an earlier process brought up, nor one started by
+// hand; set LABS_ACTION_API_KEY, the same value the repositories are given, for
+// that. What the generated key buys is a deployment that can come up with no
+// key configured at all and still hand out labs it started itself.
+func randomKey() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// Without a key there is nothing to dispatch with, and a key that is not
+		// random is worse than none: it would be predictable to whoever guessed
+		// the failure. crypto/rand does not fail on a working system.
+		panic("config: reading crypto/rand for a key: " + err.Error())
+	}
+	return hex.EncodeToString(b)
+}
 
 // defaultRepos are the repositories this service drives when neither per-kind
 // variable says anything: one entry each, the two projects whose debugger
