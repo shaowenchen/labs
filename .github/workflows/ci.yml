@@ -1,11 +1,24 @@
-# The gate every push runs. It is deliberately the same commands `make check`
-# runs, so a green local tree and a green build mean the same thing.
+# The gate every push runs, and the image it publishes.
+#
+# `check` is deliberately the same commands `make check` runs, so a green local
+# tree and a green build mean the same thing. `image` builds and pushes, and
+# only on a push to a main branch or a tag — a pull request runs `check` alone.
+#
+# `image` needs two repository secrets from Docker Hub (Account settings →
+# Personal access tokens, with Read & write — never the account password):
+#
+#   DOCKERHUB_USERNAME   the account name
+#   DOCKERHUB_TOKEN      the access token
+#
+# Nothing here echoes either one.
 name: ci
 
 on:
   push:
     branches: [main, master]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -28,3 +41,51 @@ jobs:
         run: make test-race
       - name: build
         run: make build
+
+  # One buildx build produces the manifest list: it builds linux/amd64 and
+  # linux/arm64 and joins them under each tag itself, so a pull on either
+  # architecture gets a native image. That is the whole job — there is no
+  # per-architecture build to stitch together afterwards.
+  image:
+    # A pull request has no credentials and nothing to publish. It runs `check`,
+    # which is the part that judges the change.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git describe reads the tags, and a shallow clone has none.
+          fetch-depth: 0
+
+      # QEMU is what lets the arm64 build run on this amd64 runner. The
+      # Dockerfile's builder is pinned to $BUILDPLATFORM and cross-compiles, so
+      # the Go build is native and only the base image is emulated.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: version
+        id: v
+        run: |
+          # The Makefile's own answer, so an image built here and one built
+          # locally report the same version.
+          echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            docker.io/${{ github.repository_owner }}/labs:latest
+            docker.io/${{ github.repository_owner }}/labs:${{ steps.v.outputs.version }}
+          build-args: |
+            VERSION=${{ steps.v.outputs.version }}
+            COMMIT=${{ steps.v.outputs.commit }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
