@@ -58,7 +58,7 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 		Version    string `json:"version"`
 	}
 	if err := d.call(ctx, env, http.MethodGet, "/api/v1/config", "", nil, &cfg, false); err != nil {
-		return driver.Ready{Message: "config: " + err.Error()}, nil
+		return d.notAnswering(env, "config", err), nil
 	}
 	if cfg.APIVersion == "" {
 		return driver.Ready{Message: "the config response carried no api_version"}, nil
@@ -71,7 +71,7 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 	// that answers 200 wins, and a body that will not decode is not a failure
 	// here — a 200 is the answer this is asking for.
 	if err := d.healthy(ctx, env); err != nil {
-		return driver.Ready{Message: "health: " + err.Error()}, nil
+		return d.notAnswering(env, "health", err), nil
 	}
 
 	// A keyed call: it is what says whether the key this service holds is the
@@ -85,9 +85,18 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 				Message:      "the environment is up but did not accept the key set for it",
 			}, nil
 		}
-		return driver.Ready{Message: "apps: " + err.Error()}, nil
+		return d.notAnswering(env, "apps", err), nil
 	}
 	return driver.Ready{Ready: true, ConsoleURL: env.BaseURL()}, nil
+}
+
+// notAnswering is the verdict for a probe that got no usable answer: the error
+// goes to the log, where it is worth reading, and a sentence about the state
+// goes back to the caller, who is not in a position to act on the error's
+// details. Which route failed is in the log entry.
+func (d *Driver) notAnswering(env model.Env, route string, err error) driver.Ready {
+	d.log.Warn("a readiness probe did not answer", "env", env.ID, "route", route, "error", err)
+	return driver.Ready{Message: driver.NotAnswering}
 }
 
 // healthy probes the environment's health route without a key.

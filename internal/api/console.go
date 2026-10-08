@@ -224,27 +224,37 @@ const consoleHTML = `<!doctype html>
   /* ── the kind's two states ──────────────────────────────────────────── */
   /* The cluster and the application answer different questions and are read at
      different times: is anything serving this kind at all, and is what it hands
-     out usable. They are two dots in a fixed order, stacked above what the kind
-     is running, so "the environment is up but its key was refused" cannot be
-     read as one state or the other. A dot is a dot rather than a pill: the pill
-     drew a box around a word, which on a page this quiet read as a button. */
-  .states { margin-top: 14px; display: flex; flex-direction: column; gap: 5px; }
-  .state {
-    display: grid; grid-template-columns: 8px auto 1fr; align-items: center;
-    column-gap: 8px; font-size: .87rem; color: var(--muted);
+     out usable. They are two dots in a fixed order, above what the kind is
+     running, so "the environment is up but its key was refused" cannot be read
+     as one state or the other. A dot is a dot rather than a pill: the pill drew
+     a box around a word, which on a page this quiet read as a button.
+
+     They share one line rather than stacking. Stacked, each pair was a grid row
+     owning a fixed label column, and two short labels left most of that column
+     empty — the value sat far from the word it belonged to, and the two rows
+     read as a table with a missing column. Inline, the dot delimits the pair,
+     so nothing has to align for the reading to be right, and the capacity
+     follows the states on the same line instead of sitting under them as a
+     third, unrelated-looking thought. */
+  .states {
+    margin-top: 14px;
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 6px 22px;
+    font-size: .87rem; color: var(--muted);
   }
+  .state { display: inline-flex; align-items: center; gap: 7px; }
   .state::before {
-    content: ''; width: 8px; height: 8px; border-radius: 50%;
+    content: ''; width: 7px; height: 7px; border-radius: 50%;
     background: currentColor; flex: none;
   }
-  /* The label is the same width in both lines, so the values start in one
-     column: a stack of two where each value begins wherever its own label ends
-     reads as two unrelated lines rather than one block with two rows. */
-  .state .what { width: 4.75rem; color: var(--muted); }
+  .state .what { color: var(--muted); }
   .state.ok { color: var(--ok); }
   .state.warn { color: var(--warn); }
   .state.err { color: var(--err); }
-  .state.ok .what, .state.warn .what, .state.err .what { color: var(--muted); }
+  /* How much the kind holds is a count, not a third state, so it carries no dot
+     and no status colour — it is said in the same muted voice as the labels and
+     told apart by shape alone. */
+  .states .usage { color: var(--muted); }
 
   /* The template is a choice, and the row it sits on is where the choice is
      made: its label and the picker share a baseline so the picker starts in the
@@ -266,9 +276,6 @@ const consoleHTML = `<!doctype html>
   .choice select:hover { border-color: var(--muted); }
   .choice select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
-  /* What the environment is carrying, then the labs in it — the count is the
-     table's own summary line, so it sits against it with no heading between. */
-  .usage { margin-top: 14px; font-size: .87rem; color: var(--muted); }
   /* ── what the kind is running ───────────────────────────────────────── */
   /* A table, because these are records with the same fields in each. The
      headings say what a column is once; the rows only carry the values. The id
@@ -489,8 +496,8 @@ const STRINGS = {
     'tmpl.label': 'Template',
     'usage.sandboxes': 'sandboxes: {n} of {cap} in use',
     'usage.slots': 'application slots: {n} of {cap} in use',
-    'env.start': 'Start an environment',
-    'creating': 'Starting…',
+    'env.start': 'Create a lab',
+    'creating': 'Creating…',
     'col.id': 'id', 'col.state': 'state', 'col.created': 'created', 'col.expires': 'expires',
     'empty': 'Nothing running yet.',
     'lang.aria': 'language',
@@ -506,7 +513,6 @@ const STRINGS = {
     'dur.s': '{s}s',
     'footer.commit': 'commit {c}',
     'footer.built': 'built {d}',
-    'footer.kinds': 'kinds {n}',
     'err.retryable': '(retryable)',
     'err.reach': 'could not reach the service: {m}',
     'row.error': 'error',
@@ -549,8 +555,8 @@ const STRINGS = {
     'tmpl.label': '模板',
     'usage.sandboxes': '沙箱：{cap} 个中占用 {n} 个',
     'usage.slots': '应用槽位：{cap} 个中占用 {n} 个',
-    'env.start': '启动环境',
-    'creating': '启动中…',
+    'env.start': '创建实验',
+    'creating': '创建中…',
     'col.id': 'ID', 'col.state': '状态', 'col.created': '创建于', 'col.expires': '到期',
     'empty': '暂无运行中的实例。',
     'lang.aria': '语言',
@@ -566,7 +572,6 @@ const STRINGS = {
     'dur.s': '{s}秒',
     'footer.commit': '提交 {c}',
     'footer.built': '构建于 {d}',
-    'footer.kinds': '类型 {n}',
     'err.retryable': '（可重试）',
     'err.reach': '无法连接到服务：{m}',
     'row.error': '错误',
@@ -831,26 +836,28 @@ function render() {
       // The app's line is only there once the cluster is up and there is an app
       // to describe; below that it is a second dot saying nothing.
       if (!st) return;
-      const line = document.createElement('div'); line.className = 'state ' + st.cls;
+      const line = document.createElement('span'); line.className = 'state ' + st.cls;
       const w = document.createElement('span'); w.className = 'what'; w.textContent = what;
       const v = document.createElement('span'); v.textContent = st.word;
       line.append(w, v);
       box.append(line);
     });
+    // How much the kind holds is the cluster's number and only exists when there
+    // is a cluster to ask: an environment that is not up is never asked, so its
+    // count is zero by construction, and "0 of 8 in use" under "starting" is a
+    // number nobody produced being read by someone deciding whether to press the
+    // button. The reason line is the honest answer there. It rides on the states'
+    // line rather than below it because it is a property of what is on that
+    // line, not a separate thought.
+    const capacity = env && env.capacity;
+    if (up && capacity) {
+      const n = document.createElement('span'); n.className = 'usage';
+      n.textContent = kind === 'sandboxlab'
+        ? t('usage.sandboxes', { n: env.occupied, cap: capacity })
+        : t('usage.slots', { n: env.occupied, cap: capacity });
+      box.append(n);
+    }
     usageBox.append(box);
-  }
-  // How much the kind holds is the cluster's number and only exists when there
-  // is a cluster to ask: an environment that is not up is never asked, so its
-  // count is zero by construction, and "0 of 8 in use" under "starting" is a
-  // number nobody produced being read by someone deciding whether to press the
-  // button. The reason line is the honest answer there.
-  const capacity = env && env.capacity;
-  if (up && capacity) {
-    const n = document.createElement('div'); n.className = 'usage';
-    n.textContent = kind === 'sandboxlab'
-      ? t('usage.sandboxes', { n: env.occupied, cap: capacity })
-      : t('usage.slots', { n: env.occupied, cap: capacity });
-    usageBox.append(n);
   }
   reasonBox.textContent = (env && !env.ready && env.message) ? env.message : '';
   // One word for both states. The button says what pressing it asks for — an
@@ -946,7 +953,7 @@ function renderLabs(mine) {
   labsBox.append(table);
   tick();
 }
-// setFooter renders the build identity and which kinds are in play.
+// setFooter renders the build identity.
 //
 // The time is the build's, not the moment of the last poll. An "updated" line
 // was a freshness signal — this page polls every few seconds, so a stale one
@@ -954,17 +961,12 @@ function renderLabs(mine) {
 // commit and said nothing about the thing the footer is actually about: which
 // build is running. The build time answers that, and it is what someone
 // checking whether a deploy landed is looking for.
-//
-// The kind count is here because serving fewer kinds than expected is a silent
-// mistake: nothing errors, there is just less than there should be. Saying how
-// many kinds are configured turns "where is sandboxlab" into an answer.
 function setFooter(b) {
   const parts = [];
   if (b.commit) parts.push(t('footer.commit', { c: b.commit }));
   // Shown only when the build carried one. A build that was never told when it
   // happened reports "unknown", and a date formatted from that is not a date.
   if (b.build_time && b.build_time !== 'unknown') parts.push(t('footer.built', { d: new Date(b.build_time).toLocaleString(locale()) }));
-  if (b.kinds) parts.push(t('footer.kinds', { n: b.kinds.length }));
   build.textContent = parts.join(' · ');
 }
 // countdown is how long a lab has left, as "1h 57m" or "3m 12s". It is the

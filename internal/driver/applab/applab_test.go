@@ -177,6 +177,42 @@ func TestReadyIsFalseWhenDown(t *testing.T) {
 	if r.Ready {
 		t.Fatal("Ready = true for an environment that is not there")
 	}
+	// The reason is the state, not the transport error behind it. A visitor
+	// reading the page is handed "not answering yet"; the dial error that says
+	// why is the log's, and putting it here is how an edge proxy's 530 ends up
+	// on a page as though it were the service's own fault.
+	if r.Message != driver.NotAnswering {
+		t.Errorf("Message = %q, want %q", r.Message, driver.NotAnswering)
+	}
+	if strings.Contains(r.Message, "dial") || strings.Contains(r.Message, "http://") {
+		t.Errorf("Message carries the probe's own error, not a description: %q", r.Message)
+	}
+}
+
+// A tunnel in front of an environment with no run answers 530 with Cloudflare's
+// error page. That is the exact response this page used to show verbatim —
+// "config: HTTP 530: Error 1033: Cloudflare Tunnel error" — which names an edge
+// proxy's failure to someone who only wants to know whether the lab is ready.
+func TestReadyDoesNotSurfaceATunnelError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(530)
+		_, _ = w.Write([]byte(`{"title":"Error 1033: Cloudflare Tunnel error"}`))
+	}))
+	defer srv.Close()
+	env := envWithURL(srv.URL, "/applab")
+
+	r, err := newDriver(t).Ready(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Ready returned an error for a 530: %v", err)
+	}
+	if r.Ready {
+		t.Fatal("Ready = true for an environment answering 530")
+	}
+	for _, leak := range []string{"530", "1033", "Cloudflare", "Tunnel", "config:"} {
+		if strings.Contains(r.Message, leak) {
+			t.Errorf("Message leaks the proxy error (%q): %q", leak, r.Message)
+		}
+	}
 }
 
 func TestProvisionRotatesAndReturnsTheKey(t *testing.T) {

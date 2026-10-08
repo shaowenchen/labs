@@ -67,7 +67,7 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 		BasePath   string `json:"basePath"`
 	}
 	if err := d.call(ctx, env, http.MethodGet, "/api/v1/config", "", nil, &cfg, false); err != nil {
-		return driver.Ready{Message: "config: " + err.Error()}, nil
+		return d.notAnswering(env, "config", err), nil
 	}
 	if cfg.APIVersion == "" {
 		return driver.Ready{Message: "the config response carried no apiVersion"}, nil
@@ -75,7 +75,7 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 
 	var health json.RawMessage
 	if err := d.call(ctx, env, http.MethodGet, "/healthz", "", nil, &health, false); err != nil {
-		return driver.Ready{Message: "healthz: " + err.Error()}, nil
+		return d.notAnswering(env, "healthz", err), nil
 	}
 
 	// The console address comes from what the environment reports, so a
@@ -97,9 +97,17 @@ func (d *Driver) Ready(ctx context.Context, env model.Env) (driver.Ready, error)
 				Message:      "the environment is up but did not accept the key set for it",
 			}, nil
 		}
-		return driver.Ready{Message: "sandboxes: " + err.Error()}, nil
+		return d.notAnswering(env, "sandboxes", err), nil
 	}
 	return driver.Ready{Ready: true, ConsoleURL: console}, nil
+}
+
+// notAnswering is the verdict for a probe that got no usable answer: the error
+// goes to the log, where it is worth reading, and a sentence about the state
+// goes back to the caller. See driver.NotAnswering for why the two are split.
+func (d *Driver) notAnswering(env model.Env, route string, err error) driver.Ready {
+	d.log.Warn("a readiness probe did not answer", "env", env.ID, "route", route, "error", err)
+	return driver.Ready{Message: driver.NotAnswering}
 }
 
 // Provision creates a sandbox and returns where to reach it.

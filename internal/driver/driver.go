@@ -30,8 +30,24 @@ type Ready struct {
 	Unauthorized bool
 
 	// Message explains a not-ready verdict, in words worth logging.
+	//
+	// It is shown to callers too — /readyz carries it and the console prints it
+	// under an environment that is not up — so it is a sentence about the state
+	// rather than about the failure. The error behind it (a tunnel's 530, a
+	// refused connection) belongs in the log, which is where a driver puts it;
+	// NotAnswering is what those cases return instead.
 	Message string
 }
+
+// NotAnswering is the verdict for an environment that did not answer at all.
+//
+// The several ways that happens — the tunnel in front of an environment with no
+// run is a 530, a stopped one refuses the connection, a booting one times out —
+// are the same thing to everyone but an operator: the environment is not up
+// yet, which is the ordinary state between one run ending and the next starting.
+// The error itself goes to the log and this goes on the page, so a visitor is
+// told the state rather than handed an edge proxy's diagnostics to read.
+const NotAnswering = "the environment is not answering yet"
 
 // ProvisionRequest is one session to mint, already authorized by the service's
 // own limits and already recorded in the store.
