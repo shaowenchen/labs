@@ -328,11 +328,13 @@ and `GET /api/v1/config` say what is not ready and why.
 
 ### The image, from CI
 
-Pushing to `master` or `main`, or pushing a `v*` tag, builds the image for
-`linux/amd64` and `linux/arm64` and pushes them under one manifest, so a pull on
-either architecture gets a native image. It is `docker.io/<owner>/labs`, the
-same name the Makefile's `IMAGE` default uses, tagged `latest` and with the
-version `git describe` reports.
+`.github/workflows/image.yml` does it. Pushing to `master` or `main`, or pushing
+a `v*` tag, builds the image for `linux/amd64` and `linux/arm64` and pushes them
+under one manifest, so a pull on either architecture gets a native image. It is
+`docker.io/<owner>/labs`, the same name the Makefile's `IMAGE` default uses,
+tagged `latest` and with the version `git describe` reports. Starting the
+workflow by hand does the same run, so an image can be rebuilt without an empty
+commit.
 
 The version and commit are stamped in exactly as the Makefile stamps them, so an
 image built by CI and one built locally report the same thing.
@@ -360,10 +362,9 @@ unchanged, so the service's own routing sees `/` and `/api/v1/labs` exactly as i
 does behind Caddy. `vercel.json` pins the framework and switches Vercel's own git
 integration off, so a push deploys once — from here — rather than twice.
 
-The build and the deploy are GitHub Actions' job. The `vercel` job in
-`.github/workflows/ci.yml` runs `vercel build` on the runner and uploads only the
-result, so the source is never sent to Vercel to be built there. It needs three
-repository secrets:
+The build and the deploy are GitHub Actions' job. `.github/workflows/vercel.yml`
+runs `vercel build` on the runner and uploads only the result, so the source is
+never sent to Vercel to be built there. It needs three repository secrets:
 
 | Secret | Where it comes from |
 | --- | --- |

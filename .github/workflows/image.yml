@@ -1,17 +1,20 @@
-# The gate every push runs, and the image it publishes.
+# Build and publish the image, and publish only after the tests pass.
 #
 # `check` is deliberately the same commands `make check` runs, so a green local
 # tree and a green build mean the same thing. `image` builds and pushes, and
 # only on a push to a main branch or a tag — a pull request runs `check` alone.
 #
-# `image` needs two repository secrets from Docker Hub (Account settings →
-# Personal access tokens, with Read & write — never the account password):
+# A push runs all of this itself; `workflow_dispatch` is the same run started
+# by hand, so a deployment can be redone without an empty commit.
+#
+# It needs two repository secrets from Docker Hub (Account settings → Personal
+# access tokens, with Read & write — never the account password):
 #
 #   DOCKERHUB_USERNAME   the account name
 #   DOCKERHUB_TOKEN      the access token
 #
 # Nothing here echoes either one.
-name: ci
+name: image
 
 on:
   push:
@@ -50,6 +53,7 @@ jobs:
     # A pull request has no credentials and nothing to publish. It runs `check`,
     # which is the part that judges the change.
     if: github.event_name != 'pull_request'
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -100,42 +104,3 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: hack/prune-dockerhub-tags.sh "${{ github.repository_owner }}/labs" 3
-
-  # Pushing to a main branch deploys the Vercel project, and it is the only
-  # thing that does: Vercel's own git integration is switched off in
-  # vercel.json, so a push does not deploy twice — once by Vercel and once
-  # here. The build runs in this runner (`vercel build`) and only the output is
-  # uploaded, so the source is not sent to Vercel to be built there.
-  #
-  # It needs three repository secrets, all from Vercel:
-  #
-  #   VERCEL_TOKEN        vercel.com/account/tokens
-  #   VERCEL_ORG_ID       from `vercel link`, in .vercel/project.json
-  #   VERCEL_PROJECT_ID   the same file
-  #
-  # The service's own settings — GITHUB_TOKEN and the rest — are read from
-  # the Vercel project's environment variables at runtime, not from here, so
-  # they are set in the Vercel dashboard rather than in this repository.
-  vercel:
-    # A deployment is worth nothing if the tests do not pass.
-    needs: check
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
-    # Through the environment rather than a --token argument, so the token does
-    # not appear in the command line the runner logs.
-    env:
-      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: install the Vercel CLI
-        run: npm install --global vercel@latest
-      # The project settings and environment variables have to be present before
-      # the build; `vercel build` reads them from what this writes.
-      - name: pull the project settings
-        run: vercel pull --yes --environment=production
-      - name: build
-        run: vercel build --prod
-      - name: deploy
-        run: vercel deploy --prebuilt --prod
