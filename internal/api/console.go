@@ -386,6 +386,10 @@ const consoleHTML = `<!doctype html>
   .banner ul { margin: 0; padding-left: 1.15rem; }
   .banner li { margin: 3px 0; font-size: .9rem; }
 
+  footer {
+    margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line);
+    color: var(--muted); font: .74rem/1.6 var(--mono);
+  }
   @media (max-width: 480px) {
     main { padding: 40px 16px 64px; }
     h1 { font-size: 1.6rem; }
@@ -425,6 +429,7 @@ const consoleHTML = `<!doctype html>
       <button id="create">Create a lab</button>
     </div>
   </div>
+  <footer id="build"></footer>
 </main>
 <dialog id="key-modal" class="key-modal">
   <div class="head">
@@ -441,6 +446,7 @@ const consoleHTML = `<!doctype html>
 <script>
 const status = document.getElementById('status');
 const panel = document.getElementById('panel');
+const build = document.getElementById('build');
 const blurbBox = document.getElementById('blurb');
 const usageBox = document.getElementById('usage');
 const tmplLabel = document.getElementById('tmpl-label');
@@ -507,6 +513,8 @@ const STRINGS = {
     'dur.hm': '{h}h {m}m',
     'dur.ms': '{m}m {s}s',
     'dur.s': '{s}s',
+    'footer.commit': 'commit {c}',
+    'footer.built': 'built {d}',
     'err.retryable': '(retryable)',
     'err.reach': 'could not reach the service: {m}',
     'row.error': 'error',
@@ -564,6 +572,8 @@ const STRINGS = {
     'dur.hm': '{h}小时{m}分',
     'dur.ms': '{m}分{s}秒',
     'dur.s': '{s}秒',
+    'footer.commit': '提交 {c}',
+    'footer.built': '构建于 {d}',
     'err.retryable': '（可重试）',
     'err.reach': '无法连接到服务：{m}',
     'row.error': '错误',
@@ -623,6 +633,7 @@ function setLang(code) {
   try { localStorage.setItem('labs.lang', code); } catch (e) {}
   renderStatic();
   renderLang();
+  setFooter(cfg);   // the build line is prose too, and the date is formatted to the language
   render();
   if (km.open) renderModalText();
 }
@@ -944,6 +955,22 @@ function renderLabs(mine) {
   labsBox.append(table);
   tick();
 }
+// setFooter renders the build identity.
+//
+// The time is the build's, not the moment of the last poll. An "updated" line
+// was a freshness signal — this page polls every few seconds, so a stale one
+// means it has stopped — but it read as a second, unexplained clock next to the
+// commit and said nothing about the thing the footer is actually about: which
+// build is running. The build time answers that, and it is what someone
+// checking whether a deploy landed is looking for.
+function setFooter(b) {
+  const parts = [];
+  if (b.commit) parts.push(t('footer.commit', { c: b.commit }));
+  // Shown only when the build carried one. A build that was never told when it
+  // happened reports "unknown", and a date formatted from that is not a date.
+  if (b.build_time && b.build_time !== 'unknown') parts.push(t('footer.built', { d: new Date(b.build_time).toLocaleString(locale()) }));
+  build.textContent = parts.join(' · ');
+}
 // countdown is how long a lab has left, as "1h 57m" or "3m 12s". It is the
 // product's promise, so it is shown counting down rather than as an end time
 // the reader has to subtract from.
@@ -1013,6 +1040,7 @@ async function loadStatus() {
     const { body } = await fetchJSON('api/v1/config');
     cfg = body.data || {};
     sessionTTL = cfg.session_ttl_seconds || 0;
+    setFooter(cfg);
     render();
     if (cfg.configured === false && (cfg.problems || []).length) {
       status.replaceChildren(problems(cfg.problems));
