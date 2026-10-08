@@ -1,0 +1,192 @@
+# The image, built and pushed.
+#
+# Two things this does that a single `docker build` job could not. It builds
+# each architecture on a runner of its own kind — amd64 and arm64 — and pushes
+# them by digest, then joins those digests into one manifest list, so a pull on
+# either architecture gets a native image rather than one run under emulation.
+# And it stamps the version and the commit into the binary the same way the
+# Makefile does, so a running container can answer what it is.
+#
+# It needs two repository secrets, both from Docker Hub (Account settings →
+# Personal access tokens, with Read & write — never the account password):
+#
+#   DOCKERHUB_USERNAME   the account name
+#   DOCKERHUB_TOKEN      the access token
+#
+# Nothing here echoes a secret, and every step that has one is skipped on a pull
+# request, so a fork cannot read them by opening one. Nothing is sent to the
+# registry from a pull request either: those builds run only to catch a
+# Dockerfile that no longer builds.
+name: image
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+# The registry login is the only credential used, and it is a secret rather than
+# a permission of this token. Read on the contents is all that is needed to
+# check the repository out.
+permissions:
+  contents: read
+
+env:
+  # The same image the Makefile's IMAGE default names, so a deployment pulls
+  # what CI pushed rather than a second, differently named build.
+  IMAGE: docker.io/${{ github.repository_owner }}/labs
+
+jobs:
+  # The tags are decided once, before anything is built, so both architectures
+  # and the manifest that joins them agree. Deciding them per architecture is
+  # how one platform ends up under a tag the other never got.
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      tags: ${{ steps.meta.outputs.tags }}
+      labels: ${{ steps.meta.outputs.labels }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git describe reads the tags, and a shallow clone has none.
+          fetch-depth: 0
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE }}
+          # A release — a v1.2.3 tag — publishes 1.2.3, 1.2 and latest. A branch
+          # push publishes the branch name and the commit, which is what a
+          # rollback pins. latest is left to releases: giving it to a branch
+          # push too would let any master commit quietly become the image a
+          # deployment pulls.
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=sha,prefix=sha-,format=short
+
+      - id: version
+        name: what to stamp into the binary
+        run: |
+          # The Makefile's own answer — the tag, or the nearest one plus the
+          # distance and the commit. An image built here and one built locally
+          # then report the same version. There is no build-time variable here
+          # because the Dockerfile fills that in itself, with the time the build
+          # actually happened, which is what the footer line is answering.
+          echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+          echo "commit=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+  # One architecture per runner, pushed by digest. A digest names exactly the
+  # bytes this build produced, and there is nothing to tag until both exist.
+  build:
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      # Both architectures build or the job fails. Stopping the second because
+      # the first failed would hide whichever one broke.
+      fail-fast: false
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Dockerfile pins its builder to $BUILDPLATFORM and cross-compiles, so
+      # the arm64 build is native Go rather than emulation. QEMU is here for the
+      # layer that is architecture-specific anyway — the distroless base — and
+      # so that a Dockerfile which later gains a RUN still builds.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - id: build
+        name: build ${{ matrix.platform }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ needs.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.meta.outputs.version }}
+            COMMIT=${{ needs.meta.outputs.commit }}
+          # A push goes by digest and carries no tag of its own: the tags arrive
+          # with the manifest, so a tag never names a half-built image. A pull
+          # request builds into the cache and stops — that is the whole check.
+          push: ${{ github.event_name != 'pull_request' }}
+          outputs: ${{ github.event_name == 'pull_request' && 'type=cacheonly' || format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', env.IMAGE) }}
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: hand the digest to the merge job
+        if: github.event_name != 'pull_request'
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          # The algorithm is stripped for the file name and put back when the
+          # manifest is made; an empty digest fails here rather than producing a
+          # manifest with a hole in it.
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        with:
+          # One artifact per architecture, and the name has to differ or the
+          # second upload replaces the first.
+          name: digests-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # The manifest list: one image name whose tags point at both architectures'
+  # digests.
+  merge:
+    needs: [meta, build]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digests-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: join the digests under every tag
+        working-directory: /tmp/digests
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}
+          IMAGE_TAGS: ${{ needs.meta.outputs.tags }}
+        run: |
+          set -euo pipefail
+          tag_args=()
+          while IFS= read -r tag; do
+            if [ -n "$tag" ]; then tag_args+=(--tag "$tag"); fi
+          done <<< "${IMAGE_TAGS}"
+          # Refuse to build a manifest out of nothing: an `*` that expanded to
+          # itself would otherwise become a digest argument that is not one.
+          digest_args=()
+          for file in sha256:*; do
+            if [ -e "${file}" ]; then digest_args+=("${IMAGE_REF}@${file}"); fi
+          done
+          if [ "${#digest_args[@]}" -eq 0 ]; then
+            echo "no digests to merge — the build job uploaded nothing" >&2
+            exit 1
+          fi
+          docker buildx imagetools create "${tag_args[@]}" "${digest_args[@]}"
