@@ -81,7 +81,10 @@ const consoleHTML = `<!doctype html>
     background: var(--bg);
     -webkit-font-smoothing: antialiased;
   }
-  main { max-width: 720px; margin: 0 auto; padding: 64px 20px 80px; }
+  /* The bottom padding clears the dock: it is fixed, so content scrolls under
+     it, and the build line at the end of the page would otherwise be hidden
+     behind the button when scrolled all the way down. */
+  main { max-width: 720px; margin: 0 auto; padding: 64px 20px 160px; }
 
   header { position: relative; margin-bottom: 36px; }
   /* The language switch sits in the corner of the header, out of the reading
@@ -306,15 +309,40 @@ const consoleHTML = `<!doctype html>
   .labs-table .st { font: .82rem/1.5 var(--mono); color: var(--muted); }
   .labs-table .meta { color: var(--muted); white-space: nowrap; }
   .empty { color: var(--muted); font-size: .87rem; margin: 4px 0 0; }
-  /* The action closes the tab's panel: what the kind is, what it is running,
-     and then the one thing you can do about it. The rule above it separates the
-     action from what it acts on, and is drawn even when the list above is empty
-     — the separation is between the two, not between rows. */
-  .actions {
-    display: flex; justify-content: flex-end;
-    margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line-soft);
+  /* The page's own verb, pinned to the bottom-left of the viewport rather than
+     sitting in the panel with the thing it acts on. It floats because it is not
+     about the panel: it is the one action the page offers, and a panel grown to
+     a table of running labs should not carry it below the fold. The template
+     picker joins it there, above the button, because it is a parameter of that
+     action rather than another fact about the panel.
+
+     The cluster appears with the panel and disappears with it — there is
+     nothing to ask for when no kind is served. Its left edge follows the content
+     column where there is room and the viewport where there is not: on a screen
+     wider than the column, a button in the window's own corner sits off by
+     itself, far from the thing it belongs to. */
+  .dock {
+    display: none;
+    position: fixed;
+    left: max(20px, calc(50% - 340px));
+    bottom: 20px;
+    z-index: 10;
+    width: min(22rem, calc(100vw - 40px));
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
   }
-  .actions button { padding: 9px 18px; border-radius: var(--radius-sm); white-space: nowrap; }
+  #panel.has ~ .dock { display: flex; }
+  /* The picker's row is a stack of its own here, so the panel's own margin above
+     it has nothing to sit under; it takes the dock's width so the picker lines
+     up with the button under it. */
+  .dock .choice { margin: 0; width: 100%; }
+  /* Lifted off the page the way the panel is, since it now sits over content
+     rather than following it. */
+  .actions button {
+    padding: 9px 18px; border-radius: var(--radius-sm); white-space: nowrap;
+    box-shadow: var(--shadow);
+  }
   /* Why an environment is not up, in the environment's own words. It is the one
      thing the state word cannot say, so it is the only prose in the panel. */
   .reason {
@@ -392,7 +420,9 @@ const consoleHTML = `<!doctype html>
     color: var(--muted); font: .74rem/1.6 var(--mono);
   }
   @media (max-width: 480px) {
-    main { padding: 40px 16px 64px; }
+    /* The same reason as the wide case: the dock is fixed, so the end of the
+       page has to clear it. */
+    main { padding: 40px 16px 150px; }
     h1 { font-size: 1.6rem; }
     .row { grid-template-columns: 1fr; gap: 2px; }
     .row .k { font-size: .78rem; }
@@ -419,13 +449,15 @@ const consoleHTML = `<!doctype html>
     <div class="tabs" id="kinds" role="tablist" aria-label="kind of lab" hidden></div>
     <div class="blurb" id="blurb"></div>
     <div id="error"></div>
+    <div id="usage"></div>
+    <div class="reason" id="reason"></div>
+    <div class="labs" id="labs"></div>
+  </div>
+  <div class="dock">
     <div class="choice" id="choice" hidden>
       <label class="label" id="tmpl-label" for="template">Template</label>
       <select id="template"></select>
     </div>
-    <div id="usage"></div>
-    <div class="reason" id="reason"></div>
-    <div class="labs" id="labs"></div>
     <div class="actions">
       <button id="create">Create a lab</button>
     </div>
