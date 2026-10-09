@@ -487,6 +487,14 @@ type EnvStatus struct {
 	// Unauthorized says the environment is up but refused the key this service
 	// holds. The page offers a way to enter the right one.
 	Unauthorized bool
+
+	// Starting says a run is going but the environment does not answer yet: it
+	// is coming up. It is the distinction a reader needs to tell "nothing has
+	// been started" from "one is on its way", which is the difference between
+	// asking for one and waiting for the one already asked for. The page uses it
+	// to stop asking — a request for an environment that is already booting can
+	// only spend the caller's rate limit.
+	Starting bool
 }
 
 // Status reports every environment's readiness and what it is running, in the
@@ -508,7 +516,8 @@ func (m *Manager) Status(ctx context.Context) []EnvStatus {
 	out := make([]EnvStatus, 0, len(m.cfg.Envs))
 	for _, env := range m.cfg.Envs {
 		st := EnvStatus{ID: env.ID, Kind: env.Kind, Capacity: env.Capacity}
-		if up, why, known := m.runningOn(ctx, env); known && !up {
+		up, why, known := m.runningOn(ctx, env)
+		if known && !up {
 			// No run: report that, and stop. The service is not asked anything,
 			// which is also what keeps a stopped environment from answering with
 			// an edge proxy's tunnel error instead of the real reason.
@@ -524,6 +533,12 @@ func (m *Manager) Status(ctx context.Context) []EnvStatus {
 			st.Message = r.Message
 			st.Unauthorized = r.Unauthorized
 		}
+		// A run is going and the environment is neither answering nor refusing
+		// the key: it is on its way. Only claimed when the run check could
+		// answer — a listing that failed says nothing about whether one is
+		// booting, and saying "starting" on a guess would tell the page to wait
+		// for a run that may not exist.
+		st.Starting = known && up && !st.Ready && !st.Unauthorized
 		out = append(out, st)
 	}
 	return out

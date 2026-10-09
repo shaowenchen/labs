@@ -368,3 +368,34 @@ func TestConfigReportsUnauthorizedEnvironment(t *testing.T) {
 		t.Errorf("unauthorized = %v, want true", e["unauthorized"])
 	}
 }
+
+// An environment that is coming up is reported as starting, so the page can
+// stop asking for one — a request for an environment already booting can only
+// spend the caller's rate limit, and it is what produced "too many labs
+// requested from this address" for a visitor whose press then had no budget
+// left. The flag is absent, not false, when it does not apply, so the payload a
+// reader sees is the same shape it was before the flag existed.
+func TestConfigReportsAStartingEnvironment(t *testing.T) {
+	svc := &fakeSvc{status: []session.EnvStatus{{ID: "APPLAB", Kind: model.KindApplab, Starting: true}}}
+	s := newTestServer(t, svc, testConfig(), 5)
+
+	got := data[map[string]any](t, do(t, s, "GET", "/api/v1/config", ""))
+	envs, _ := got["environments"].([]any)
+	if len(envs) != 1 {
+		t.Fatalf("environments = %v", got["environments"])
+	}
+	e, _ := envs[0].(map[string]any)
+	if e["starting"] != true {
+		t.Errorf("starting = %v, want true", e["starting"])
+	}
+
+	// An environment that is not starting carries no such field at all.
+	plain := &fakeSvc{status: []session.EnvStatus{{ID: "APPLAB", Kind: model.KindApplab, Ready: true}}}
+	ps := newTestServer(t, plain, testConfig(), 5)
+	pgot := data[map[string]any](t, do(t, ps, "GET", "/api/v1/config", ""))
+	penvs, _ := pgot["environments"].([]any)
+	pe, _ := penvs[0].(map[string]any)
+	if _, ok := pe["starting"]; ok {
+		t.Errorf("a ready environment carries starting = %v; the field should be absent", pe["starting"])
+	}
+}

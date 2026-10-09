@@ -888,7 +888,7 @@ function render() {
   // unconfigured deployment shows an empty outline.
   panel.classList.toggle('has', !!kind);
   renderError();
-  maybeAutoStart(kind, env, up);
+  maybeAutoStart(kind, env);
 }
 // maybeAutoStart brings a kind up by itself, so that a visitor arriving at a
 // kind nobody has started yet is not the one who has to work out that they can.
@@ -901,18 +901,29 @@ function render() {
 // is the same one the button sends, and the server answers it the same way —
 // with the environment a few minutes out.
 //
-// It is guarded in time, not in state. A trigger that only ever fired once
-// would leave a kind that came up and then went down sitting idle, so the page
-// keeps asking on the poll's slow beat; the gap is well over the couple of
-// minutes an environment takes, which is what keeps one down environment from
-// being asked about twice a second. The request goes through the visitor's own
-// rate limit, and that limit therefore counts auto-starts as well as presses.
+// It does not ask for an environment that is already coming up. The server
+// reports that state ("starting": a run is going, the environment does not
+// answer yet), and a request for one that is already booting can only be
+// refused — which, because this shares the visitor's own rate limit, spends the
+// budget their own press needs. That is the failure this guard exists against:
+// a slow boot used to eat every request the page made on its own, and the
+// visitor's press was answered "too many labs requested from this address".
+//
+// It is guarded in time as well, not in state. A trigger that only ever fired
+// once would leave a kind that came up and then went down sitting idle, so the
+// page keeps asking on the poll's slow beat. The pace is the server's: a
+// refusal names how long to wait (Retry-After, which every retryable answer
+// carries), so the page waits exactly as long as it was told rather than
+// guessing — and a spent rate limit parks it until the window resets instead of
+// asking again against a closed door.
 let autoStartAt = 0;
+let autoStartNotBefore = 0; // a refusal's Retry-After, as a wall clock time
 const autoStartGap = 120000; // 2 min, about one environment's boot
-function maybeAutoStart(kind, env, up) {
-  if (!kind || !env || env.ready || env.unauthorized) return;
-  if (busy || error || Date.now() - autoStartAt < autoStartGap) return;
-  autoStartAt = Date.now();
+function maybeAutoStart(kind, env) {
+  if (!kind || !env || env.ready || env.unauthorized || env.starting) return;
+  const now = Date.now();
+  if (busy || error || now < autoStartNotBefore || now - autoStartAt < autoStartGap) return;
+  autoStartAt = now;
   create({ silent: true });
 }
 // stateWord is the state column's one word. The environment names it, so this
@@ -1050,10 +1061,18 @@ async function fetchJSON(url, opts) {
   try {
     const res = await fetch(url, Object.assign({ signal: ctrl.signal }, opts || {}));
     const body = await res.json();
-    return { ok: res.ok, status: res.status, body };
+    return { ok: res.ok, status: res.status, body, retryAfter: retryAfterOf(res) };
   } finally {
     clearTimeout(timer);
   }
+}
+// retryAfterOf reads a response's Retry-After as milliseconds. The server sends
+// it in seconds on every answer it marks retryable, which is what lets a caller
+// wait as long as it was told instead of guessing. Anything unreadable is zero,
+// which the caller treats as "no advice".
+function retryAfterOf(res) {
+  const secs = parseInt(res.headers.get('Retry-After'), 10);
+  return Number.isFinite(secs) && secs > 0 ? secs * 1000 : 0;
 }
 async function loadStatus() {
   try {
@@ -1108,9 +1127,14 @@ async function create(opts) {
   const req = { kind: kind };
   if (template) req.template = template;
   try {
-    const { ok, status: code, body } = await fetchJSON('api/v1/labs', {
+    const { ok, status: code, body, retryAfter } = await fetchJSON('api/v1/labs', {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(req) });
     if (!ok) {
+      // A refusal names how long to wait. A silent ask (the page's own trigger)
+      // takes that as its pace — the server's window, not a guess — so a
+      // refused auto-start cannot keep asking and cannot spend the budget the
+      // visitor's own press needs.
+      if (silent && retryAfter) autoStartNotBefore = Date.now() + retryAfter;
       if (!silent || !body.retryable) showError(body, code);
       loadStatus(); // show the environment the request just started
       return;

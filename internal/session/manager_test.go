@@ -85,6 +85,17 @@ func (f *fakeDriver) Reconcile(context.Context, model.Env, []model.Session) erro
 	return nil
 }
 
+// unauthorizedDriver is an environment that is up and refuses the key: it
+// answers, with a 401, so the probe reports it as unauthorized rather than
+// silent.
+type unauthorizedDriver struct {
+	fakeDriver
+}
+
+func (d *unauthorizedDriver) Ready(context.Context, model.Env) (driver.Ready, error) {
+	return driver.Ready{Unauthorized: true}, nil
+}
+
 func testManager(t *testing.T, drv driver.Driver, cfg config.Config) (*Manager, *store.Store) {
 	t.Helper()
 	st := store.New()
@@ -532,6 +543,71 @@ func TestStatusGatesOnTheRun(t *testing.T) {
 	}
 	if st.Message == "" {
 		t.Error("with no run, the status should say so")
+	}
+}
+
+// A run that is going while the environment does not answer yet is "starting":
+// the page reads that to stop asking for one, which is what keeps a slow boot
+// from spending the caller's own rate limit. A run with no answer and an
+// environment that refused the key are not the same — the second is not coming
+// up, so it must not read as "wait".
+func TestStatusReportsAStartingEnvironment(t *testing.T) {
+	drv := &fakeDriver{ready: false} // a run is going, the app does not answer yet
+	m, _ := testManager(t, drv, testConfig())
+	m.WithRunnerCheck(func(context.Context, model.Env) (bool, string, bool) {
+		return true, "", true
+	})
+
+	got := m.Status(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("Status = %v", got)
+	}
+	if !got[0].Starting {
+		t.Errorf("Starting = false; a run going over a silent environment is one that is coming up: %+v", got[0])
+	}
+	if got[0].Ready {
+		t.Error("a starting environment should not read as ready")
+	}
+}
+
+// The starting flag is claimed only on evidence: when the run check could not
+// answer, whether one is booting is unknown, and saying "starting" would tell
+// the page to wait for a run that may not exist.
+func TestStatusDoesNotGuessStarting(t *testing.T) {
+	drv := &fakeDriver{ready: false}
+	m, _ := testManager(t, drv, testConfig())
+	m.WithRunnerCheck(func(context.Context, model.Env) (bool, string, bool) {
+		return false, "", false // unknown
+	})
+
+	got := m.Status(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("Status = %v", got)
+	}
+	if got[0].Starting {
+		t.Error("Starting = true on an unknown run state; it should be claimed only when a run is known to be going")
+	}
+}
+
+// An environment that is up and refusing the key is not starting: it is
+// reachable, and no amount of waiting fixes a key. Saying "starting" there would
+// tell the page to wait for a boot that already happened.
+func TestStatusDoesNotCallAnUnauthorizedEnvironmentStarting(t *testing.T) {
+	drv := &unauthorizedDriver{}
+	m, _ := testManager(t, drv, testConfig())
+	m.WithRunnerCheck(func(context.Context, model.Env) (bool, string, bool) {
+		return true, "", true
+	})
+
+	got := m.Status(context.Background())
+	if len(got) != 1 {
+		t.Fatalf("Status = %v", got)
+	}
+	if got[0].Starting {
+		t.Error("an unauthorized environment is not starting; the key is the problem, not the wait")
+	}
+	if !got[0].Unauthorized {
+		t.Error("Unauthorized = false; the environment refused the key")
 	}
 }
 

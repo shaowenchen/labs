@@ -210,6 +210,9 @@ func envStatusJSON(envs []session.EnvStatus) []map[string]any {
 		if e.Unauthorized {
 			m["unauthorized"] = true
 		}
+		if e.Starting {
+			m["starting"] = true
+		}
 		out = append(out, m)
 	}
 	return out
