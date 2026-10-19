@@ -115,8 +115,9 @@ bool}`. The statuses a caller branches on:
 - `201` — the lab, with its key. The only response that carries a key: a
   `GET` returns the session without it, so an id that leaks does not leak a
   credential.
-- `429` — this address has had its share (either too many requests, or it
-  already holds a lab). `Retry-After` says when to come back.
+- `429` — this address has had its share: too many requests, or it already
+  holds a lab. Only a deployment that turns either limit back on answers this;
+  `Retry-After` says when to come back.
 - `503` — no environment is up, or they are all in use. Retryable; a
   `Retry-After` says roughly when.
 
@@ -126,15 +127,23 @@ authority over their own lab.
 
 ### Limits
 
-Anonymous access needs a ceiling. Three, all configurable:
+Only one cap is on by default: the **global cap** (`LABS_MAX_SESSIONS`,
+defaulting to the sum of the environments' capacities). Within that, each
+environment serves `LABS_ENV_SLOTS` sessions, so what one caller can take is
+bounded by the deployment's own size rather than by a rule about them.
 
+Two more are available and off by default — set either to a positive number to
+turn it back on:
+
+- a **concurrent-session cap per address** (`LABS_MAX_SESSIONS_PER_IP`), counted
+  from recorded sessions;
 - a **rate limit** on `POST /api/v1/labs` per address, a fixed window
-  (`LABS_RATE_LIMIT_COUNT` per `LABS_RATE_LIMIT_WINDOW`, five an hour by
-  default);
-- a **concurrent-session cap per address** (`LABS_MAX_SESSIONS_PER_IP`, one by
-  default), counted from live sessions so it heals when one expires;
-- a **global cap** (`LABS_MAX_SESSIONS`, defaulting to the sum of the
-  environments' capacities).
+  (`LABS_RATE_LIMIT_COUNT` per `LABS_RATE_LIMIT_WINDOW`).
+
+Both are per process and therefore best-effort on a platform that runs several
+instances: each instance counts only its own callers. The global cap is the one
+that holds everywhere, and the environment's own capacity is the one that cannot
+be exceeded.
 
 The client address comes from the connection unless `LABS_TRUSTED_PROXY` is set,
 in which case `X-Forwarded-For` is believed. That flag is off by default for a

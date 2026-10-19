@@ -77,11 +77,14 @@ type Config struct {
 	// derive it from the environments' own capacities.
 	MaxSessions int
 
-	// MaxSessionsPerIP caps concurrent sessions from one address.
+	// MaxSessionsPerIP caps concurrent sessions from one address. Zero means no
+	// limit, which is the default: a lab is already bounded by its
+	// environment's capacity, and a per-address cap only adds a refusal a
+	// legitimate caller can hit while holding nothing else.
 	MaxSessionsPerIP int
 
 	// RateLimitCount is how many session requests one address may make in
-	// RateLimitWindow.
+	// RateLimitWindow. Zero means no limit, which is the default.
 	RateLimitCount int
 
 	// RateLimitWindow is the window RateLimitCount applies over.
@@ -188,10 +191,10 @@ func Load() (Config, error) {
 	if cfg.MaxSessions, err = intEnv("LABS_MAX_SESSIONS", 0); err != nil {
 		return Config{}, err
 	}
-	if cfg.MaxSessionsPerIP, err = intEnv("LABS_MAX_SESSIONS_PER_IP", 1); err != nil {
+	if cfg.MaxSessionsPerIP, err = intEnv("LABS_MAX_SESSIONS_PER_IP", 0); err != nil {
 		return Config{}, err
 	}
-	if cfg.RateLimitCount, err = intEnv("LABS_RATE_LIMIT_COUNT", 5); err != nil {
+	if cfg.RateLimitCount, err = intEnv("LABS_RATE_LIMIT_COUNT", 0); err != nil {
 		return Config{}, err
 	}
 	if cfg.EnvSlots, err = intEnv("LABS_ENV_SLOTS", defaultEnvSlots); err != nil {

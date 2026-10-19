@@ -904,18 +904,20 @@ function render() {
 // It does not ask for an environment that is already coming up. The server
 // reports that state ("starting": a run is going, the environment does not
 // answer yet), and a request for one that is already booting can only be
-// refused — which, because this shares the visitor's own rate limit, spends the
-// budget their own press needs. That is the failure this guard exists against:
-// a slow boot used to eat every request the page made on its own, and the
-// visitor's press was answered "too many labs requested from this address".
+// refused — which, when a deployment has its request rate limit on, spends the
+// budget the visitor's own press needs. That is the failure this guard exists
+// against: a slow boot used to eat every request the page made on its own, and
+// the visitor's press was answered "too many labs requested from this address".
 //
 // It is guarded in time as well, not in state. A trigger that only ever fired
 // once would leave a kind that came up and then went down sitting idle, so the
-// page keeps asking on the poll's slow beat. The pace is the server's: a
-// refusal names how long to wait (Retry-After, which every retryable answer
-// carries), so the page waits exactly as long as it was told rather than
-// guessing — and a spent rate limit parks it until the window resets instead of
-// asking again against a closed door.
+// page keeps asking on the poll's slow beat. When a refusal names how long to
+// wait (Retry-After, which every retryable answer carries), the page waits
+// exactly as long as it was told rather than guessing — so a spot taken or a
+// rate limit hit parks it for the server's interval instead of it asking again
+// against a closed door. The per-address limits are off by default; this guard
+// still matters without them, because every ask that fails may have dispatched
+// a boot that is already under way.
 let autoStartAt = 0;
 let autoStartNotBefore = 0; // a refusal's Retry-After, as a wall clock time
 const autoStartGap = 120000; // 2 min, about one environment's boot
@@ -1131,9 +1133,8 @@ async function create(opts) {
       method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(req) });
     if (!ok) {
       // A refusal names how long to wait. A silent ask (the page's own trigger)
-      // takes that as its pace — the server's window, not a guess — so a
-      // refused auto-start cannot keep asking and cannot spend the budget the
-      // visitor's own press needs.
+      // takes that as its pace — the server's interval, not a guess — so a
+      // refused auto-start cannot keep asking against a closed door.
       if (silent && retryAfter) autoStartNotBefore = Date.now() + retryAfter;
       if (!silent || !body.retryable) showError(body, code);
       loadStatus(); // show the environment the request just started
@@ -1155,7 +1156,8 @@ async function create(opts) {
 }
 // busy is true while a request of this page's own is in flight, whether the
 // visitor pressed the button or the page did. A second one while the first is
-// out would spend another unit of the rate limit to ask for the same thing.
+// out would ask for the same thing twice, and a second lab is not what either
+// the visitor or the page meant.
 let busy = false;
 // error is a failed request's message, held rather than drawn on the spot so
 // the poll does not wipe it while it is on screen. Only a new request or a
